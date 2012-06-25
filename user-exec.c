@@ -94,6 +94,12 @@ static inline int handle_cpu_signal(uintptr_t pc, unsigned long address,
         return 1;
     }
 
+    if (GUEST_BASE) {
+        /* Convert forcefully to guest address space, invalid addresses
+           are still valid segv ones */
+        address = address - GUEST_BASE;
+    }
+
     env = current_cpu->env_ptr;
     /* see if it is an MMU fault */
     ret = cpu_handle_mmu_fault(env, address, is_write, MMU_USER_IDX);
