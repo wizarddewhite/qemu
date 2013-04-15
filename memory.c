@@ -453,6 +453,19 @@ const IORangeOps memory_region_iorange_ops = {
     .destructor = memory_region_iorange_destructor,
 };
 
+static AddressSpace *memory_region_root_to_address_space(MemoryRegion *mr)
+{
+    AddressSpace *as;
+
+    QTAILQ_FOREACH(as, &address_spaces, address_spaces_link) {
+        if (mr == as->root) {
+            return as;
+        }
+    }
+
+    return NULL;
+}
+
 static AddressSpace *memory_region_to_address_space(MemoryRegion *mr)
 {
     AddressSpace *as;
@@ -460,12 +473,29 @@ static AddressSpace *memory_region_to_address_space(MemoryRegion *mr)
     while (mr->parent) {
         mr = mr->parent;
     }
-    QTAILQ_FOREACH(as, &address_spaces, address_spaces_link) {
-        if (mr == as->root) {
-            return as;
-        }
+
+    as = memory_region_root_to_address_space(mr);
+    if (as) {
+        return as;
     }
+
     abort();
+}
+
+hwaddr memory_region_to_address(MemoryRegion *mr, AddressSpace **asp)
+{
+    hwaddr addr = mr->addr;
+
+    while (mr->parent) {
+        mr = mr->parent;
+        addr += mr->addr;
+    }
+
+    if (asp) {
+        *asp = memory_region_root_to_address_space(mr);
+    }
+
+    return addr;
 }
 
 /* Render a memory region into the global view.  Ranges in @view obscure
