@@ -28,6 +28,7 @@
 /* Select x86 specific features in <linux/kvm.h> */
 #define __KVM_HAVE_PIT
 #define __KVM_HAVE_IOAPIC
+#define __KVM_HAVE_IRQCHIP
 #define __KVM_HAVE_IRQ_LINE
 #define __KVM_HAVE_DEVICE_ASSIGNMENT
 #define __KVM_HAVE_MSI
@@ -75,6 +76,7 @@ struct kvm_pic_state {
 };
 
 #define KVM_IOAPIC_NUM_PINS  24
+#define KVM_IRQCHIP_NUM_PINS  KVM_IOAPIC_NUM_PINS
 struct kvm_ioapic_state {
 	__u64 base_address;
 	__u32 ioregsel;
@@ -96,7 +98,7 @@ struct kvm_ioapic_state {
 			__u8 reserved[4];
 			__u8 dest_id;
 		} fields;
-	} redirtbl[KVM_IOAPIC_NUM_PINS];
+	} redirtbl[KVM_IRQCHIP_NUM_PINS];
 };
 
 #define KVM_IRQCHIP_PIC_MASTER   0
