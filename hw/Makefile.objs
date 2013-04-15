@@ -216,4 +216,5 @@ obj-$(CONFIG_KVM) += ivshmem.o
 obj-$(CONFIG_LINUX) += vfio_pci.o
 endif
 
+obj-$(CONFIG_KVM) += kvm/
 endif

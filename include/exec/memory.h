@@ -892,6 +892,15 @@ void *address_space_map(AddressSpace *as, hwaddr addr,
 void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
                          int is_write, hwaddr access_len);
 
+/* memory_region_to_address: Find the full address of the start of the
+ *      given #MemoryRegion, ignoring aliases.  There is no guarantee
+ *      that the #MemoryRegion is actually visible at this address, if
+ *      there are overlapping regions.
+ *
+ * @mr: #MemoryRegion being queried
+ * @asp: if non-NULL, returns the #AddressSpace @mr is mapped in, if any
+ */
+hwaddr memory_region_to_address(MemoryRegion *mr, AddressSpace **asp);
 
 #endif
 
