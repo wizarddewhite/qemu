@@ -1,1 +1,6 @@
-obj-$(CONFIG_KVM) += clock.o apic.o i8259.o ioapic.o i8254.o pci-assign.o
+ifeq ($(TARGET_BASE_ARCH),i386)
+TARGET_BASE_I386=y
+endif
+
+obj-$(TARGET_BASE_I386) += clock.o apic.o i8259.o ioapic.o i8254.o pci-assign.o
+obj-$(TARGET_ARM) += arm_gic.o
