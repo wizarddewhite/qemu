@@ -25,5 +25,6 @@ enum {
                              OPENPIC_MAX_TMR)
 
 DeviceState *kvm_openpic_create(BusState *bus, int model);
+int kvm_openpic_connect_vcpu(DeviceState *d, CPUState *cs);
 
 #endif /* __OPENPIC_H__ */
