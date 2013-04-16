@@ -478,13 +478,15 @@ static DeviceState *ppce500_init_mpic_kvm(PPCE500Params *params,
     DeviceState *dev;
     CPUPPCState *env;
     CPUState *cs;
+    int r;
 
-    dev = kvm_openpic_create(NULL, params->mpic_version);
-    if (!dev) {
+    dev = qdev_create(NULL, "kvm-openpic");
+    qdev_prop_set_uint32(dev, "model", params->mpic_version);
+
+    r = qdev_init(dev);
+    if (r) {
         return NULL;
     }
-
-    qdev_init_nofail(dev);
 
     for (env = first_cpu; env != NULL; env = env->next_cpu) {
         cs = ENV_GET_CPU(env);

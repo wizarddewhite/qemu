@@ -146,11 +146,15 @@ static void kvm_openpic_update_reg_base(MemoryListener *listener)
 
 static int kvm_openpic_init(SysBusDevice *dev)
 {
+    KVMState *s = kvm_state;
     KVMOpenPICState *opp = FROM_SYSBUS(typeof(*opp), dev);
     int kvm_openpic_model;
+    struct kvm_create_device cd = {0};
+    int ret;
 
-    memory_region_init_io(&opp->mem, &kvm_openpic_mem_ops, opp,
-                          "kvm-openpic", 0x40000);
+    if (!kvm_check_extension(s, KVM_CAP_DEVICE_CTRL)) {
+        return -EINVAL;
+    }
 
     switch (opp->model) {
     case OPENPIC_MODEL_FSL_MPIC_20:
@@ -164,6 +168,18 @@ static int kvm_openpic_init(SysBusDevice *dev)
     default:
         return -EINVAL;
     }
+
+    cd.type = kvm_openpic_model;
+    ret = kvm_vm_ioctl(s, KVM_CREATE_DEVICE, &cd);
+    if (ret < 0) {
+        qemu_log_mask(LOG_UNIMP, "%s: can't create device %d: %s\n",
+                      __func__, cd.type, strerror(errno));
+        return -EINVAL;
+    }
+    opp->kern_id = cd.fd;
+
+    memory_region_init_io(&opp->mem, &kvm_openpic_mem_ops, opp,
+                          "kvm-openpic", 0x40000);
 
     sysbus_init_mmio(dev, &opp->mem);
     qdev_init_gpio_in(&dev->qdev, kvm_openpic_set_irq, OPENPIC_MAX_IRQ);
@@ -185,46 +201,6 @@ int kvm_openpic_connect_vcpu(DeviceState *d, CPUState *cs)
     encap.args[1] = cs->cpu_index;
 
     return kvm_vcpu_ioctl(cs, KVM_ENABLE_CAP, &encap);
-}
-
-DeviceState *kvm_openpic_create(BusState *bus, int model)
-{
-    KVMState *s = kvm_state;
-    DeviceState *dev;
-    struct kvm_create_device cd = {0};
-    int ret;
-
-    if (!kvm_check_extension(s, KVM_CAP_DEVICE_CTRL)) {
-        return NULL;
-    }
-
-    switch (model) {
-    case OPENPIC_MODEL_FSL_MPIC_20:
-        cd.type = KVM_DEV_TYPE_FSL_MPIC_20;
-        break;
-
-    case OPENPIC_MODEL_FSL_MPIC_42:
-        cd.type = KVM_DEV_TYPE_FSL_MPIC_42;
-        break;
-
-    default:
-        qemu_log_mask(LOG_UNIMP, "%s: unknown openpic model %d\n",
-                      __func__, model);
-        return NULL;
-    }
-
-    ret = kvm_vm_ioctl(s, KVM_CREATE_DEVICE, &cd);
-    if (ret < 0) {
-        qemu_log_mask(LOG_UNIMP, "%s: can't create device %d: %s\n",
-                      __func__, cd.type, strerror(errno));
-        return NULL;
-    }
-
-    dev = qdev_create(NULL, "kvm-openpic");
-    qdev_prop_set_uint32(dev, "model", model);
-    qdev_prop_set_uint32(dev, "kernel-id", cd.fd);
-
-    return dev;
 }
 
 static Property kvm_openpic_properties[] = {
