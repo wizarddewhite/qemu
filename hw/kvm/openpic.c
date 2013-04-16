@@ -36,7 +36,7 @@ typedef struct KVMOpenPICState {
     MemoryRegion mem;
     MemoryListener mem_listener;
     hwaddr reg_base;
-    uint32_t kern_id;
+    uint32_t fd;
     uint32_t model;
 } KVMOpenPICState;
 
@@ -51,7 +51,7 @@ static void kvm_openpic_set_irq(void *opaque, int n_IRQ, int level)
     attr.attr = n_IRQ;
     attr.addr = (uint64_t)(long)&val32;
 
-    ret = ioctl(opp->kern_id, KVM_SET_DEVICE_ATTR, &attr);
+    ret = ioctl(opp->fd, KVM_SET_DEVICE_ATTR, &attr);
     if (ret < 0) {
         fprintf(stderr, "%s: %s %llx\n", __func__, strerror(errno), attr.attr);
     }
@@ -74,7 +74,7 @@ static void kvm_openpic_write(void *opaque, hwaddr addr, uint64_t val,
     attr.attr = addr;
     attr.addr = (uint64_t)(long)&val32;
 
-    ret = ioctl(opp->kern_id, KVM_SET_DEVICE_ATTR, &attr);
+    ret = ioctl(opp->fd, KVM_SET_DEVICE_ATTR, &attr);
     if (ret < 0) {
         qemu_log_mask(LOG_UNIMP, "%s: %s %llx\n", __func__,
                       strerror(errno), attr.attr);
@@ -92,7 +92,7 @@ static uint64_t kvm_openpic_read(void *opaque, hwaddr addr, unsigned size)
     attr.attr = addr;
     attr.addr = (uint64_t)(long)&val;
 
-    ret = ioctl(opp->kern_id, KVM_GET_DEVICE_ATTR, &attr);
+    ret = ioctl(opp->fd, KVM_GET_DEVICE_ATTR, &attr);
     if (ret < 0) {
         qemu_log_mask(LOG_UNIMP, "%s: %s %llx\n", __func__,
                       strerror(errno), attr.attr);
@@ -138,7 +138,7 @@ static void kvm_openpic_update_reg_base(MemoryListener *listener)
     attr.attr = KVM_DEV_MPIC_BASE_ADDR;
     attr.addr = (uint64_t)(long)&reg_base;
 
-    ret = ioctl(opp->kern_id, KVM_SET_DEVICE_ATTR, &attr);
+    ret = ioctl(opp->fd, KVM_SET_DEVICE_ATTR, &attr);
     if (ret < 0) {
         fprintf(stderr, "%s: %s %llx\n", __func__, strerror(errno), reg_base);
     }
@@ -176,7 +176,7 @@ static int kvm_openpic_init(SysBusDevice *dev)
                       __func__, cd.type, strerror(errno));
         return -EINVAL;
     }
-    opp->kern_id = cd.fd;
+    opp->fd = cd.fd;
 
     memory_region_init_io(&opp->mem, &kvm_openpic_mem_ops, opp,
                           "kvm-openpic", 0x40000);
@@ -197,7 +197,7 @@ int kvm_openpic_connect_vcpu(DeviceState *d, CPUState *cs)
     struct kvm_enable_cap encap = {};
 
     encap.cap = KVM_CAP_IRQ_MPIC;
-    encap.args[0] = opp->kern_id;
+    encap.args[0] = opp->fd;
     encap.args[1] = cs->cpu_index;
 
     return kvm_vcpu_ioctl(cs, KVM_ENABLE_CAP, &encap);
@@ -206,7 +206,6 @@ int kvm_openpic_connect_vcpu(DeviceState *d, CPUState *cs)
 static Property kvm_openpic_properties[] = {
     DEFINE_PROP_UINT32("model", KVMOpenPICState, model,
                        OPENPIC_MODEL_FSL_MPIC_20),
-    DEFINE_PROP_UINT32("kernel-id", KVMOpenPICState, kern_id, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 
