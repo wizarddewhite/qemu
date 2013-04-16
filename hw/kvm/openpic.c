@@ -188,6 +188,10 @@ static int kvm_openpic_init(SysBusDevice *dev)
     memory_listener_register(&opp->mem_listener, &address_space_memory);
 
     msi_supported = true;
+    kvm_kernel_irqchip = true;
+    kvm_async_interrupts_allowed = true;
+    kvm_init_irq_routing(kvm_state);
+
     return 0;
 }
 
