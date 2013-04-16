@@ -185,6 +185,7 @@ static int kvm_openpic_init(SysBusDevice *dev)
     for (i = 0; i < 256; ++i) {
         kvm_irqchip_add_irq_route(kvm_state, i, 0, i);
     }
+    kvm_irqchip_commit_routes(s);
 
     return 0;
 }
