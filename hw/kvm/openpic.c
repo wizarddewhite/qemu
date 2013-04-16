@@ -42,19 +42,7 @@ typedef struct KVMOpenPICState {
 
 static void kvm_openpic_set_irq(void *opaque, int n_IRQ, int level)
 {
-    KVMOpenPICState *opp = opaque;
-    struct kvm_device_attr attr;
-    uint32_t val32 = level;
-    int ret;
-
-    attr.group = KVM_DEV_MPIC_GRP_IRQ_ACTIVE;
-    attr.attr = n_IRQ;
-    attr.addr = (uint64_t)(long)&val32;
-
-    ret = ioctl(opp->fd, KVM_SET_DEVICE_ATTR, &attr);
-    if (ret < 0) {
-        fprintf(stderr, "%s: %s %llx\n", __func__, strerror(errno), attr.attr);
-    }
+    kvm_set_irq(kvm_state, n_IRQ, level);
 }
 
 static void kvm_openpic_reset(DeviceState *d)
@@ -150,7 +138,7 @@ static int kvm_openpic_init(SysBusDevice *dev)
     KVMOpenPICState *opp = FROM_SYSBUS(typeof(*opp), dev);
     int kvm_openpic_model;
     struct kvm_create_device cd = {0};
-    int ret;
+    int ret, i;
 
     if (!kvm_check_extension(s, KVM_CAP_DEVICE_CTRL)) {
         return -EINVAL;
@@ -187,10 +175,16 @@ static int kvm_openpic_init(SysBusDevice *dev)
     opp->mem_listener.commit = kvm_openpic_update_reg_base;
     memory_listener_register(&opp->mem_listener, &address_space_memory);
 
+    /* indicate pic capabilities */
     msi_supported = true;
     kvm_kernel_irqchip = true;
     kvm_async_interrupts_allowed = true;
+
+    /* set up irq routing */
     kvm_init_irq_routing(kvm_state);
+    for (i = 0; i < 256; ++i) {
+        kvm_irqchip_add_irq_route(kvm_state, i, 0, i);
+    }
 
     return 0;
 }
