@@ -1372,8 +1372,9 @@ static inline abi_long host_to_target_cmsg(struct target_msghdr *target_msgh,
             int *target_fd = (int *)target_data;
             int i, numfds = len / sizeof(int);
 
-            for (i = 0; i < numfds; i++)
+            for (i = 0; i < numfds; i++) {
                 target_fd[i] = tswap32(fd[i]);
+            }
         } else if ((cmsg->cmsg_level == TARGET_SOL_SOCKET) &&
                                 (cmsg->cmsg_type == SO_TIMESTAMP) &&
                                 (len == sizeof(struct timeval))) {
@@ -4162,7 +4163,7 @@ static abi_long do_modify_ldt(CPUX86State *env, int func, abi_ulong ptr,
 }
 
 #if defined(TARGET_I386) && defined(TARGET_ABI32)
-static abi_long do_set_thread_area(CPUX86State *env, abi_ulong ptr)
+abi_long do_set_thread_area(CPUX86State *env, abi_ulong ptr)
 {
     uint64_t *gdt_table = g2h(env->gdt.base);
     struct target_modify_ldt_ldt_s ldt_info;
@@ -4420,7 +4421,17 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
         init_task_state(ts);
         /* we create a new CPU instance. */
         new_env = cpu_copy(env);
-#if defined(TARGET_I386) || defined(TARGET_SPARC) || defined(TARGET_PPC)
+#if defined(TARGET_I386)
+        //cpu_reset(ENV_GET_CPU(new_env));
+        new_env->idt.base = target_mmap(0, sizeof(uint64_t) * (env->idt.limit + 1),
+                PROT_READ|PROT_WRITE,
+                MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+        memcpy(g2h(new_env->idt.base), g2h(env->idt.base), sizeof(uint64_t) * (env->idt.limit + 1));
+        new_env->gdt.base = target_mmap(0, sizeof(uint64_t) * TARGET_GDT_ENTRIES,
+                PROT_READ|PROT_WRITE,
+                MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+        memcpy(g2h(new_env->gdt.base), g2h(env->gdt.base), sizeof(uint64_t) * TARGET_GDT_ENTRIES);
+#elif defined(TARGET_SPARC) || defined(TARGET_PPC)
         cpu_reset(ENV_GET_CPU(new_env));
 #endif
         /* Init regs that differ from the parent.  */

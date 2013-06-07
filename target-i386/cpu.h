@@ -1191,6 +1191,15 @@ static inline void cpu_get_tb_cpu_state(CPUX86State *env, target_ulong *pc,
         (env->eflags & (IOPL_MASK | TF_MASK | RF_MASK | VM_MASK | AC_MASK));
 }
 
+#if defined(CONFIG_USER_ONLY) && defined(TARGET_ABI32)
+abi_long do_set_thread_area(CPUX86State *env, abi_ulong ptr);
+static inline void cpu_set_tls(CPUX86State *env, target_ulong newtls)
+{
+    do_set_thread_area(env, newtls);
+    cpu_x86_load_seg(env, R_GS, env->segs[R_GS].selector);
+}
+#endif
+
 void do_cpu_init(X86CPU *cpu);
 void do_cpu_sipi(X86CPU *cpu);
 

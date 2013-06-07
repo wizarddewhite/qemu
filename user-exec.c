@@ -89,7 +89,7 @@ static inline int handle_cpu_signal(uintptr_t pc, unsigned long address,
 #endif
 
     /* Maybe we're still holding the TB fiddling lock? */
-    spin_unlock_safe(&tb_lock);
+    spin_unlock_safe(&tcg_ctx.tb_ctx.tb_lock);
 
     /* XXX: locking issue */
     if (is_write && h2g_valid(address)
