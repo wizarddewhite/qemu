@@ -97,7 +97,7 @@ static inline int handle_cpu_signal(uintptr_t pc, unsigned long address,
         return 1;
     }
 
-    if (RESERVED_VA) {
+    if (GUEST_BASE) {
         /* Convert forcefully to guest address space, invalid addresses
            are still valid segv ones */
         address = address - GUEST_BASE;
@@ -451,8 +451,7 @@ int cpu_signal_handler(int host_signum, void *pinfo,
 #else
     pc = uc->uc_mcontext.arm_pc;
 #endif
-    /* XXX: compute is_write */
-    is_write = 0;
+    is_write = (uc->uc_mcontext.error_code & 0x800) ? 1 : 0;
     return handle_cpu_signal(pc, (unsigned long)info->si_addr,
                              is_write,
                              &uc->uc_sigmask, puc);
