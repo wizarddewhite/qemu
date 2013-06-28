@@ -130,6 +130,7 @@ typedef struct MACIOIDEState {
 
     MemoryRegion mem;
     IDEBus bus;
+    IDEDMA dma;
     BlockDriverAIOCB *aiocb;
 } MACIOIDEState;
 

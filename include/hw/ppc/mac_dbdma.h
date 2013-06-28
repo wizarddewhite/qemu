@@ -37,6 +37,8 @@ struct DBDMA_io {
     int is_last;
     int is_dma_out;
     DBDMA_end dma_end;
+    int processing;
+    int remainder;
 };
 
 

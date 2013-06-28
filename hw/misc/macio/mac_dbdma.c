@@ -42,7 +42,7 @@
 #include "qemu/main-loop.h"
 
 /* debug DBDMA */
-//#define DEBUG_DBDMA
+#define DEBUG_DBDMA
 
 #ifdef DEBUG_DBDMA
 #define DBDMA_DPRINTF(fmt, ...)                                 \
@@ -163,7 +163,6 @@ typedef struct DBDMA_channel {
     DBDMA_rw rw;
     DBDMA_flush flush;
     dbdma_cmd current;
-    int processing;
 } DBDMA_channel;
 
 typedef struct {
@@ -360,13 +359,15 @@ static void conditional_branch(DBDMA_channel *ch)
     }
 }
 
-static QEMUBH *dbdma_bh;
+QEMUBH *dbdma_bh;
 static void channel_run(DBDMA_channel *ch);
 
 static void dbdma_end(DBDMA_io *io)
 {
     DBDMA_channel *ch = io->channel;
     dbdma_cmd *current = &ch->current;
+
+    DBDMA_DPRINTF("%s:%d\n", __func__, __LINE__);
 
     if (conditional_wait(ch))
         goto wait;
@@ -381,7 +382,7 @@ static void dbdma_end(DBDMA_io *io)
     conditional_branch(ch);
 
 wait:
-    ch->processing = 0;
+    ch->io.processing = 0;
     if ((ch->regs[DBDMA_STATUS] & RUN) &&
         (ch->regs[DBDMA_STATUS] & ACTIVE))
         channel_run(ch);
@@ -407,7 +408,7 @@ static void start_output(DBDMA_channel *ch, int key, uint32_t addr,
     ch->io.is_last = is_last;
     ch->io.dma_end = dbdma_end;
     ch->io.is_dma_out = 1;
-    ch->processing = 1;
+    ch->io.processing = 1;
     if (ch->rw) {
         ch->rw(&ch->io);
     }
@@ -422,6 +423,7 @@ static void start_input(DBDMA_channel *ch, int key, uint32_t addr,
      * are not implemented in the mac-io chip
      */
 
+    DBDMA_DPRINTF("addr 0x%x key 0x%x\n", addr, key);
     if (!addr || key > KEY_STREAM3) {
         kill_channel(ch);
         return;
@@ -432,7 +434,7 @@ static void start_input(DBDMA_channel *ch, int key, uint32_t addr,
     ch->io.is_last = is_last;
     ch->io.dma_end = dbdma_end;
     ch->io.is_dma_out = 0;
-    ch->processing = 1;
+    ch->io.processing = 1;
     if (ch->rw) {
         ch->rw(&ch->io);
     }
@@ -630,8 +632,13 @@ static void DBDMA_run(DBDMAState *s)
     for (channel = 0; channel < DBDMA_CHANNELS; channel++) {
         DBDMA_channel *ch = &s->channels[channel];
         uint32_t status = ch->regs[DBDMA_STATUS];
-        if (!ch->processing && (status & RUN) && (status & ACTIVE)) {
+        if (!ch->io.processing && (status & RUN) && (status & ACTIVE)) {
             channel_run(ch);
+        } else if (ch->io.processing) {
+            /* see if we can resume transfers */
+            if (ch->rw) {
+                ch->rw(&ch->io);
+            }
         }
     }
 }
@@ -712,7 +719,8 @@ static void dbdma_write(void *opaque, hwaddr addr,
     DBDMA_channel *ch = &s->channels[channel];
     int reg = (addr - (channel << DBDMA_CHANNEL_SHIFT)) >> 2;
 
-    DBDMA_DPRINTF("writel 0x" TARGET_FMT_plx " <= 0x%08x\n", addr, value);
+    DBDMA_DPRINTF("writel 0x" TARGET_FMT_plx " <= 0x%08"PRIx64"\n",
+                  addr, value);
     DBDMA_DPRINTF("channel 0x%x reg 0x%x\n",
                   (uint32_t)addr >> DBDMA_CHANNEL_SHIFT, reg);
 
