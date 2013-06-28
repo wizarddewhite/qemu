@@ -123,6 +123,7 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
     IDEState *s = idebus_active_if(&m->bus);
     int n;
     int64_t sector_num;
+    int unaligned;
 
     if (ret < 0) {
         MACIO_DPRINTF("DMA error\n");
@@ -166,7 +167,6 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
         }
         io->addr += io->remainder;
         io->len -= io->remainder;
-        s->io_buffer_size -= io->remainder;
         io->remainder = 0;
     }
 
@@ -198,14 +198,43 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
     s->io_buffer_index = 0;
     s->io_buffer_size = io->len;
 
+    /* handle unaligned accesses first, get them over with and only do the
+       remaining bulk transfer using our async DMA helpers */
+    unaligned = io->len & 0x1ff;
+    if (unaligned) {
+        uint8_t iobuf[0x200];
+
+        MACIO_DPRINTF("precopying unaligned %d bytes to %#lx\n",
+                      unaligned, io->addr + io->len - unaligned);
+
+        switch (s->dma_cmd) {
+        case IDE_DMA_READ:
+            bdrv_read(s->bs, sector_num + s->nsector - 1, iobuf, 1);
+            cpu_physical_memory_write(io->addr + io->len - unaligned, iobuf,
+                                      unaligned);
+            break;
+        case IDE_DMA_WRITE:
+            bdrv_read(s->bs, sector_num - 1, iobuf, 1);
+            cpu_physical_memory_read(io->addr + io->len - unaligned, iobuf,
+                                     unaligned);
+            bdrv_write(s->bs, sector_num - 1, iobuf, 1);
+            break;
+        case IDE_DMA_TRIM:
+            break;
+        }
+
+        io->len -= unaligned;
+    }
+
     MACIO_DPRINTF("io->len = %#x\n", io->len);
 
     qemu_sglist_init(&s->sg, io->len / MACIO_PAGE_SIZE + 1,
                      &address_space_memory);
     qemu_sglist_add(&s->sg, io->addr, io->len);
-    io->addr += io->len;
-    io->remainder = ((512 * s->nsector) - io->len) & 511;
+    io->addr += io->len + unaligned;
+    io->remainder = (0x200 - unaligned) & 0x1ff;
     MACIO_DPRINTF("set remainder to: %d\n", io->remainder);
+
     io->len = 0;
 
     MACIO_DPRINTF("sector_num=%" PRId64 " n=%d, nsector=%d, cmd_cmd=%d\n",
