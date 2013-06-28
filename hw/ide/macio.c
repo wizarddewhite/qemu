@@ -142,7 +142,8 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
 
     sector_num = ide_get_sector(s);
 
-    if (io->remainder && (io->remainder == (io->len & 511))) {
+    MACIO_DPRINTF("remainder: %d io->len: %d\n", io->remainder, io->len);
+    if (io->remainder && (io->remainder <= io->len)) {
         /* guest wants the rest of its previous transfer */
         uint8_t iobuf[0x200];
 
@@ -165,6 +166,7 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
         }
         io->addr += io->remainder;
         io->len -= io->remainder;
+        s->io_buffer_size -= io->remainder;
         io->remainder = 0;
     }
 
@@ -179,7 +181,7 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
     }
 
     /* end of transfer ? */
-    if (s->nsector == 0) {
+    if (s->nsector == 0 && !io->remainder) {
         MACIO_DPRINTF("end of transfer\n");
         s->status = READY_STAT | SEEK_STAT;
         ide_set_irq(s->bus);
@@ -202,7 +204,8 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
                      &address_space_memory);
     qemu_sglist_add(&s->sg, io->addr, io->len);
     io->addr += io->len;
-    io->remainder = (512 - (io->len & 511)) & 511;
+    io->remainder = ((512 * s->nsector) - io->len) & 511;
+    MACIO_DPRINTF("set remainder to: %d\n", io->remainder);
     io->len = 0;
 
     MACIO_DPRINTF("sector_num=%" PRId64 " n=%d, nsector=%d, cmd_cmd=%d\n",
