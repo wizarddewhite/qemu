@@ -385,7 +385,7 @@ static BlockDriver bdrv_dmg = {
 
 static void bdrv_dmg_init(void)
 {
-    bdrv_register(&bdrv_dmg);
+if(0)    bdrv_register(&bdrv_dmg);
 }
 
 block_init(bdrv_dmg_init);
