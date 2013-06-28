@@ -701,7 +701,7 @@ static int cpu_gdb_write_register(CPUX86State *env, uint8_t *mem_buf, int n)
    historical mishap the FP registers appear in between core integer
    regs and PC, MSR, CR, and so forth.  We hack round this by giving the
    FP regs zero size when talking to a newer gdb.  */
-#define NUM_CORE_REGS 71
+#define NUM_CORE_REGS (71+32)
 #if defined (TARGET_PPC64)
 #define GDB_CORE_XML "power64-core.xml"
 #else
@@ -712,18 +712,22 @@ static int cpu_gdb_read_register(CPUPPCState *env, uint8_t *mem_buf, int n)
 {
     if (n < 32) {
         /* gprs */
-        GET_REGL(env->gpr[n]);
+        GET_REG64(env->gpr[n]);
     } else if (n < 64) {
         /* fprs */
-        if (gdb_has_xml)
+        if (0 && gdb_has_xml)
             return 0;
         stfq_p(mem_buf, env->fpr[n-32]);
         return 8;
+    } else if (n < 96) {
+        stq_p(mem_buf, n - 64);
+        stq_p(mem_buf + 8, 0);
+        return 16;
     } else {
         switch (n) {
-        case 64: GET_REGL(env->nip);
-        case 65: GET_REGL(env->msr);
-        case 66:
+        case 64+32: GET_REG64(env->nip);
+        case 65+32: GET_REG64(env->msr);
+        case 66+32:
             {
                 uint32_t cr = 0;
                 int i;
@@ -731,14 +735,14 @@ static int cpu_gdb_read_register(CPUPPCState *env, uint8_t *mem_buf, int n)
                     cr |= env->crf[i] << (32 - ((i + 1) * 4));
                 GET_REG32(cr);
             }
-        case 67: GET_REGL(env->lr);
-        case 68: GET_REGL(env->ctr);
-        case 69: GET_REGL(env->xer);
-        case 70:
+        case 67+32: GET_REG64(env->lr);
+        case 68+32: GET_REG64(env->ctr);
+        case 69+32: GET_REG64(env->xer);
+        case 70+32:
             {
                 if (gdb_has_xml)
                     return 0;
-                GET_REG32(env->fpscr);
+                GET_REG64(env->fpscr);
             }
         }
     }
@@ -749,8 +753,8 @@ static int cpu_gdb_write_register(CPUPPCState *env, uint8_t *mem_buf, int n)
 {
     if (n < 32) {
         /* gprs */
-        env->gpr[n] = ldtul_p(mem_buf);
-        return sizeof(target_ulong);
+        env->gpr[n] = ldq_p(mem_buf);
+        return sizeof(uint64_t);
     } else if (n < 64) {
         /* fprs */
         if (gdb_has_xml)
@@ -759,13 +763,13 @@ static int cpu_gdb_write_register(CPUPPCState *env, uint8_t *mem_buf, int n)
         return 8;
     } else {
         switch (n) {
-        case 64:
+        case 64+32:
             env->nip = ldtul_p(mem_buf);
             return sizeof(target_ulong);
-        case 65:
+        case 65+32:
             ppc_store_msr(env, ldtul_p(mem_buf));
             return sizeof(target_ulong);
-        case 66:
+        case 66+32:
             {
                 uint32_t cr = ldl_p(mem_buf);
                 int i;
@@ -773,21 +777,23 @@ static int cpu_gdb_write_register(CPUPPCState *env, uint8_t *mem_buf, int n)
                     env->crf[i] = (cr >> (32 - ((i + 1) * 4))) & 0xF;
                 return 4;
             }
-        case 67:
+        case 67+32:
             env->lr = ldtul_p(mem_buf);
             return sizeof(target_ulong);
-        case 68:
+        case 68+32:
             env->ctr = ldtul_p(mem_buf);
             return sizeof(target_ulong);
-        case 69:
+        case 69+32:
             env->xer = ldtul_p(mem_buf);
             return sizeof(target_ulong);
-        case 70:
+        case 70+32:
             /* fpscr */
             if (gdb_has_xml)
                 return 0;
             store_fpscr(env, ldtul_p(mem_buf), 0xffffffff);
             return sizeof(target_ulong);
+        default:
+            return 16;
         }
     }
     return 0;
