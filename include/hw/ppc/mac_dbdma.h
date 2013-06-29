@@ -37,8 +37,11 @@ struct DBDMA_io {
     int is_last;
     int is_dma_out;
     DBDMA_end dma_end;
+    /* DMA is in progress, don't start another one */
     int processing;
-    int remainder;
+    /* unaligned last sector of a request */
+    uint8_t remainder[0x200];
+    int remainder_len;
 };
 
 

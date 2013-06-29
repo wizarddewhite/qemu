@@ -387,10 +387,12 @@ static void dbdma_end(DBDMA_io *io)
     conditional_branch(ch);
 
 wait:
-    ch->io.processing = 0;
     if ((ch->regs[DBDMA_STATUS] & RUN) &&
         (ch->regs[DBDMA_STATUS] & ACTIVE))
         channel_run(ch);
+
+    /* Indicate that we're ready for a new DMA round */
+    ch->io.processing = 0;
 }
 
 static void start_output(DBDMA_channel *ch, int key, uint32_t addr,
@@ -637,7 +639,7 @@ static void DBDMA_run(DBDMAState *s)
     for (channel = 0; channel < DBDMA_CHANNELS; channel++) {
         DBDMA_channel *ch = &s->channels[channel];
         uint32_t status = ch->regs[DBDMA_STATUS];
-        if ((status & RUN) && (status & ACTIVE)) {
+        if ((status & RUN) && (status & ACTIVE) && !ch->io.processing) {
             channel_run(ch);
         }
     }
