@@ -374,6 +374,9 @@ static void dbdma_end(DBDMA_io *io)
 
     DBDMA_DPRINTF("%s:%d\n", __func__, __LINE__);
 
+    /* Indicate that we're ready for a new DMA round */
+    ch->io.processing = 0;
+
     if (conditional_wait(ch))
         goto wait;
 
@@ -390,9 +393,6 @@ wait:
     if ((ch->regs[DBDMA_STATUS] & RUN) &&
         (ch->regs[DBDMA_STATUS] & ACTIVE))
         channel_run(ch);
-
-    /* Indicate that we're ready for a new DMA round */
-    ch->io.processing = 0;
 }
 
 static void start_output(DBDMA_channel *ch, int key, uint32_t addr,

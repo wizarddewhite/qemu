@@ -163,8 +163,9 @@ static void pmac_ide_atapi_transfer_cb(void *opaque, int ret)
     qemu_sglist_init(&s->sg, io->len / MACIO_PAGE_SIZE + 1,
                      &address_space_memory);
     qemu_sglist_add(&s->sg, io->addr, io->len);
-    io->addr += io->len + unaligned;
-    io->remainder_len = (s->packet_transfer_size - s->io_buffer_size) & 0x1ff;
+    io->addr += s->io_buffer_size;
+    io->remainder_len = MIN(s->packet_transfer_size - s->io_buffer_size,
+                            (0x200 - unaligned) & 0x1ff);
     MACIO_DPRINTF("set remainder to: %d\n", io->remainder_len);
 
     if (!io->len) {
@@ -226,22 +227,22 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
         s->nsector -= n;
     }
 
-    MACIO_DPRINTF("remainder: %d io->len: %d nsector: %d\n", io->remainder_len,
-                  io->len, s->nsector);
+    MACIO_DPRINTF("remainder: %d io->len: %d nsector: %d sector_num: %ld\n",
+                  io->remainder_len, io->len, s->nsector, sector_num);
     if (io->remainder_len && io->len) {
         /* guest wants the rest of its previous transfer */
         int remainder_len = MIN(io->remainder_len, io->len);
+        uint8_t *p = &io->remainder[0x200 - remainder_len];
 
-        MACIO_DPRINTF("copying remainder %d bytes\n", remainder_len);
+        MACIO_DPRINTF("copying remainder %d bytes at %#lx\n",
+                      remainder_len, io->addr);
 
         switch (s->dma_cmd) {
         case IDE_DMA_READ:
-            cpu_physical_memory_write(io->addr, io->remainder + 512 -
-                                      remainder_len, remainder_len);
+            cpu_physical_memory_write(io->addr, p, remainder_len);
             break;
         case IDE_DMA_WRITE:
-            cpu_physical_memory_read(io->addr, io->remainder + 512 -
-                                     remainder_len, io->remainder_len);
+            cpu_physical_memory_read(io->addr, p, remainder_len);
             bdrv_write(s->bs, sector_num - 1, io->remainder, 1);
             break;
         case IDE_DMA_TRIM:
@@ -287,10 +288,9 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
                                       io->remainder, unaligned);
             break;
         case IDE_DMA_WRITE:
-            bdrv_read(s->bs, sector_num + nsector, io->remainder, 1);
+            /* cache the contents in our io struct */
             cpu_physical_memory_read(io->addr + io->len - unaligned,
                                      io->remainder, unaligned);
-            bdrv_write(s->bs, sector_num + nsector, io->remainder, 1);
             break;
         case IDE_DMA_TRIM:
             break;
