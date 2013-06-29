@@ -232,6 +232,7 @@ static void conditional_interrupt(DBDMA_channel *ch)
         return;
     case INTR_ALWAYS: /* always interrupt */
         qemu_irq_raise(ch->irq);
+        DBDMA_DPRINTF("conditional_interrupt: raise\n");
         return;
     }
 
@@ -244,12 +245,16 @@ static void conditional_interrupt(DBDMA_channel *ch)
 
     switch(intr) {
     case INTR_IFSET:  /* intr if condition bit is 1 */
-        if (cond)
+        if (cond) {
             qemu_irq_raise(ch->irq);
+            DBDMA_DPRINTF("conditional_interrupt: raise\n");
+        }
         return;
     case INTR_IFCLR:  /* intr if condition bit is 0 */
-        if (!cond)
+        if (!cond) {
             qemu_irq_raise(ch->irq);
+            DBDMA_DPRINTF("conditional_interrupt: raise\n");
+        }
         return;
     }
 }
@@ -632,13 +637,8 @@ static void DBDMA_run(DBDMAState *s)
     for (channel = 0; channel < DBDMA_CHANNELS; channel++) {
         DBDMA_channel *ch = &s->channels[channel];
         uint32_t status = ch->regs[DBDMA_STATUS];
-        if (!ch->io.processing && (status & RUN) && (status & ACTIVE)) {
+        if ((status & RUN) && (status & ACTIVE)) {
             channel_run(ch);
-        } else if (ch->io.processing) {
-            /* see if we can resume transfers */
-            if (ch->rw) {
-                ch->rw(&ch->io);
-            }
         }
     }
 }
@@ -724,11 +724,11 @@ static void dbdma_write(void *opaque, hwaddr addr,
     DBDMA_DPRINTF("channel 0x%x reg 0x%x\n",
                   (uint32_t)addr >> DBDMA_CHANNEL_SHIFT, reg);
 
-    /* cmdptr cannot be modified if channel is RUN or ACTIVE */
+    /* cmdptr cannot be modified if channel is ACTIVE */
 
-    if (reg == DBDMA_CMDPTR_LO &&
-        (ch->regs[DBDMA_STATUS] & (RUN | ACTIVE)))
+    if (reg == DBDMA_CMDPTR_LO && (ch->regs[DBDMA_STATUS] & ACTIVE)) {
 	return;
+    }
 
     ch->regs[reg] = value;
 
