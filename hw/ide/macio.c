@@ -59,6 +59,14 @@ static void pmac_ide_atapi_transfer_cb(void *opaque, int ret)
         goto done;
     }
 
+    if (!m->dma_active) {
+        MACIO_DPRINTF("waiting for data (%#x - %#x - %x)\n",
+                      s->nsector, io->len, s->status);
+        /* data not ready yet, wait for the channel to get restarted */
+        io->processing = 0;
+        return;
+    }
+
     MACIO_DPRINTF("io_buffer_size = %#x\n", s->io_buffer_size);
 
     if (s->io_buffer_size > 0) {
@@ -76,6 +84,7 @@ static void pmac_ide_atapi_transfer_cb(void *opaque, int ret)
     if (s->packet_transfer_size <= 0) {
         MACIO_DPRINTF("end of transfer\n");
         ide_atapi_cmd_ok(s);
+        m->dma_active = false;
     }
 
     /* end of DMA ? */
@@ -127,6 +136,14 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
         goto done;
     }
 
+    if (!m->dma_active) {
+        MACIO_DPRINTF("waiting for data (%#x - %#x - %x)\n",
+                      s->nsector, io->len, s->status);
+        /* data not ready yet, wait for the channel to get restarted */
+        io->processing = 0;
+        return;
+    }
+
     sector_num = ide_get_sector(s);
     MACIO_DPRINTF("io_buffer_size = %#x\n", s->io_buffer_size);
     if (s->io_buffer_size > 0) {
@@ -143,6 +160,7 @@ static void pmac_ide_transfer_cb(void *opaque, int ret)
         MACIO_DPRINTF("end of transfer\n");
         s->status = READY_STAT | SEEK_STAT;
         ide_set_irq(s->bus);
+        m->dma_active = false;
     }
 
     /* end of DMA ? */
@@ -379,6 +397,7 @@ static void ide_dbdma_start(IDEDMA *dma, IDEState *s,
     MACIOIDEState *m = container_of(dma, MACIOIDEState, dma);
 
     MACIO_DPRINTF("\n", __LINE__);
+    m->dma_active = true;
     DBDMA_kick(m->dbdma);
 }
 
