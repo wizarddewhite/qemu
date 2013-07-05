@@ -45,8 +45,8 @@ envlist_t *envlist;
 const char *cpu_model;
 unsigned long mmap_min_addr;
 #if defined(CONFIG_USE_GUEST_BASE)
-unsigned long guest_base;
-int have_guest_base;
+unsigned long guest_base = 64 * 1024;
+int have_guest_base = 1;
 #if (TARGET_LONG_BITS == 32) && (HOST_LONG_BITS == 64)
 /*
  * When running 32-on-64 we should make sure we can fit all of the possible
@@ -3294,7 +3294,7 @@ static void handle_arg_cpu(const char *arg)
 static void handle_arg_guest_base(const char *arg)
 {
     guest_base = strtol(arg, NULL, 0);
-    have_guest_base = 1;
+    have_guest_base = guest_base ? 1 : 0;
 }
 
 static void handle_arg_reserved_va(const char *arg)
