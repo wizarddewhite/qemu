@@ -214,7 +214,7 @@ __target_cmsg_nxthdr (struct target_msghdr *__mhdr, struct target_cmsghdr *__cms
 
   __ptr = (struct target_cmsghdr *)((unsigned char *) __cmsg
                                     + TARGET_CMSG_ALIGN (tswapal(__cmsg->cmsg_len)));
-  if ((unsigned long)((char *)(__ptr+1) - (char *)(size_t)tswapal(__mhdr->msg_control))
+  if ((unsigned long)((char *)(h2g(__ptr+1)) - (char *)(size_t)tswapal(__mhdr->msg_control))
       > tswapal(__mhdr->msg_controllen))
     /* No more entries.  */
     return (struct target_cmsghdr *)0;
