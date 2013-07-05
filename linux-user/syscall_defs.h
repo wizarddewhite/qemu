@@ -199,26 +199,46 @@ struct target_cmsghdr {
     int          cmsg_type;
 };
 
-#define TARGET_CMSG_DATA(cmsg) ((unsigned char *) ((struct target_cmsghdr *) (cmsg) + 1))
-#define TARGET_CMSG_NXTHDR(mhdr, cmsg) __target_cmsg_nxthdr (mhdr, cmsg)
-#define TARGET_CMSG_ALIGN(len) (((len) + sizeof (abi_long) - 1) \
-                               & (size_t) ~(sizeof (abi_long) - 1))
-#define TARGET_CMSG_SPACE(len) (TARGET_CMSG_ALIGN (len) \
-                               + TARGET_CMSG_ALIGN (sizeof (struct target_cmsghdr)))
-#define TARGET_CMSG_LEN(len)   (TARGET_CMSG_ALIGN (sizeof (struct target_cmsghdr)) + (len))
-
-static __inline__ struct target_cmsghdr *
-__target_cmsg_nxthdr (struct target_msghdr *__mhdr, struct target_cmsghdr *__cmsg)
+static inline unsigned char *target_cmsg_data(struct target_cmsghdr *cmsg)
 {
-  struct target_cmsghdr *__ptr;
+    return ((unsigned char *) ((struct target_cmsghdr *) (cmsg) + 1));
+}
 
-  __ptr = (struct target_cmsghdr *)((unsigned char *) __cmsg
-                                    + TARGET_CMSG_ALIGN (tswapal(__cmsg->cmsg_len)));
-  if ((unsigned long)((char *)(__ptr+1) - (char *)(size_t)tswapal(__mhdr->msg_control))
-      > tswapal(__mhdr->msg_controllen))
-    /* No more entries.  */
-    return (struct target_cmsghdr *)0;
-  return __cmsg;
+static inline abi_ulong target_cmsg_align(abi_ulong len)
+{
+    return ((len) + sizeof(abi_long) - 1) & (size_t)~(sizeof(abi_long) - 1);
+}
+
+static inline abi_ulong target_cmsg_len(abi_ulong len)
+{
+    return target_cmsg_align(sizeof (struct target_cmsghdr)) + len;
+}
+
+static inline abi_ulong target_cmsg_space(abi_ulong len)
+{
+    return target_cmsg_len(target_cmsg_align(len));
+}
+
+static inline struct target_cmsghdr *target_cmsg_nxthdr(
+        struct target_msghdr *mhdr, struct target_cmsghdr *cmsg,
+        struct target_cmsghdr *first_cmsg)
+{
+    abi_ulong len;
+
+    /* length of all entries since the first one */
+    len = ((uintptr_t)first_cmsg - (uintptr_t)cmsg);
+    /* plus length of this header */
+    len += sizeof(struct target_cmsghdr);
+    /* plus length of this entry's data */
+    len += target_cmsg_align(tswapal(cmsg->cmsg_len));
+
+    /* no more entries */
+    if (tswapal(mhdr->msg_controllen) < len) {
+        return NULL;
+    }
+
+    /* XXX: return this header, this looks broken */
+    return cmsg;
 }
 
 

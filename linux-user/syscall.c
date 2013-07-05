@@ -1120,6 +1120,7 @@ static inline abi_long target_to_host_cmsg(struct msghdr *msgh,
     abi_long msg_controllen;
     abi_ulong target_cmsg_addr;
     struct target_cmsghdr *target_cmsg;
+    struct target_cmsghdr *first_target_cmsg;
     socklen_t space = 0;
     
     msg_controllen = tswapal(target_msgh->msg_controllen);
@@ -1129,13 +1130,14 @@ static inline abi_long target_to_host_cmsg(struct msghdr *msgh,
     target_cmsg = lock_user(VERIFY_READ, target_cmsg_addr, msg_controllen, 1);
     if (!target_cmsg)
         return -TARGET_EFAULT;
+    first_target_cmsg = target_cmsg;
 
     while (cmsg && target_cmsg) {
         void *data = CMSG_DATA(cmsg);
-        void *target_data = TARGET_CMSG_DATA(target_cmsg);
+        void *target_data = target_cmsg_data(target_cmsg);
 
         int len = tswapal(target_cmsg->cmsg_len)
-                  - TARGET_CMSG_ALIGN(sizeof (struct target_cmsghdr));
+                  - target_cmsg_align(sizeof (struct target_cmsghdr));
 
         space += CMSG_SPACE(len);
         if (space > msgh->msg_controllen) {
@@ -1161,7 +1163,8 @@ static inline abi_long target_to_host_cmsg(struct msghdr *msgh,
         }
 
         cmsg = CMSG_NXTHDR(msgh, cmsg);
-        target_cmsg = TARGET_CMSG_NXTHDR(target_msgh, target_cmsg);
+        target_cmsg = target_cmsg_nxthdr(target_msgh, target_cmsg,
+                                         first_target_cmsg);
     }
     unlock_user(target_cmsg, target_cmsg_addr, 0);
  the_end:
@@ -1176,6 +1179,7 @@ static inline abi_long host_to_target_cmsg(struct target_msghdr *target_msgh,
     abi_long msg_controllen;
     abi_ulong target_cmsg_addr;
     struct target_cmsghdr *target_cmsg;
+    struct target_cmsghdr *first_target_cmsg;
     socklen_t space = 0;
 
     msg_controllen = tswapal(target_msgh->msg_controllen);
@@ -1183,25 +1187,27 @@ static inline abi_long host_to_target_cmsg(struct target_msghdr *target_msgh,
         goto the_end;
     target_cmsg_addr = tswapal(target_msgh->msg_control);
     target_cmsg = lock_user(VERIFY_WRITE, target_cmsg_addr, msg_controllen, 0);
-    if (!target_cmsg)
+    if (!target_cmsg) {
         return -TARGET_EFAULT;
+    }
+    first_target_cmsg = target_cmsg;
 
     while (cmsg && target_cmsg) {
         void *data = CMSG_DATA(cmsg);
-        void *target_data = TARGET_CMSG_DATA(target_cmsg);
+        void *target_data = target_cmsg_data(target_cmsg);
 
         int len = cmsg->cmsg_len - CMSG_ALIGN(sizeof (struct cmsghdr));
 
-        space += TARGET_CMSG_SPACE(len);
+        space += target_cmsg_space(len);
         if (space > msg_controllen) {
-            space -= TARGET_CMSG_SPACE(len);
+            space -= target_cmsg_space(len);
             gemu_log("Target cmsg overflow\n");
             break;
         }
 
         target_cmsg->cmsg_level = tswap32(cmsg->cmsg_level);
         target_cmsg->cmsg_type = tswap32(cmsg->cmsg_type);
-        target_cmsg->cmsg_len = tswapal(TARGET_CMSG_LEN(len));
+        target_cmsg->cmsg_len = tswapal(target_cmsg_len(len));
 
         if ((cmsg->cmsg_level == TARGET_SOL_SOCKET) &&
                                 (cmsg->cmsg_type == SCM_RIGHTS)) {
@@ -1228,7 +1234,8 @@ static inline abi_long host_to_target_cmsg(struct target_msghdr *target_msgh,
         }
 
         cmsg = CMSG_NXTHDR(msgh, cmsg);
-        target_cmsg = TARGET_CMSG_NXTHDR(target_msgh, target_cmsg);
+        target_cmsg = target_cmsg_nxthdr(target_msgh, target_cmsg,
+                                         first_target_cmsg);
     }
     unlock_user(target_cmsg, target_cmsg_addr, space);
  the_end:
