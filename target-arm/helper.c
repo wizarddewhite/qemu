@@ -3635,30 +3635,32 @@ float64 VFP_HELPER(sqrt, d)(float64 a, CPUARMState *env)
 }
 
 /* XXX: check quiet/signaling case */
-#define DO_VFP_cmp(p, type) \
-void VFP_HELPER(cmp, p)(type a, type b, CPUARMState *env)  \
-{ \
-    uint32_t flags; \
-    switch(type ## _compare_quiet(a, b, &env->vfp.fp_status)) { \
-    case 0: flags = 0x6; break; \
-    case -1: flags = 0x8; break; \
-    case 1: flags = 0x2; break; \
-    default: case 2: flags = 0x3; break; \
-    } \
-    env->vfp.xregs[ARM_VFP_FPSCR] = (flags << 28) \
-        | (env->vfp.xregs[ARM_VFP_FPSCR] & 0x0fffffff); \
-} \
-void VFP_HELPER(cmpe, p)(type a, type b, CPUARMState *env) \
-{ \
-    uint32_t flags; \
-    switch(type ## _compare(a, b, &env->vfp.fp_status)) { \
-    case 0: flags = 0x6; break; \
-    case -1: flags = 0x8; break; \
-    case 1: flags = 0x2; break; \
-    default: case 2: flags = 0x3; break; \
-    } \
-    env->vfp.xregs[ARM_VFP_FPSCR] = (flags << 28) \
-        | (env->vfp.xregs[ARM_VFP_FPSCR] & 0x0fffffff); \
+#define DO_VFP_cmp(p, type)                                                    \
+void VFP_HELPER(cmp, p)(type a, type b, CPUARMState *env)                      \
+{                                                                              \
+    uint32_t flags;                                                            \
+    switch(type ## _compare_quiet(a, b, &env->vfp.fp_status)) {                \
+    case float_relation_equal:     flags = PSTATE_Z | PSTATE_C; break;         \
+    case float_relation_less:      flags = PSTATE_N;            break;         \
+    case float_relation_greater:   flags = PSTATE_C;            break;         \
+    default:                                                                   \
+    case float_relation_unordered: flags = PSTATE_V | PSTATE_C; break;         \
+    }                                                                          \
+    env->vfp.xregs[ARM_VFP_FPSCR] = (flags << 28)                              \
+        | (env->vfp.xregs[ARM_VFP_FPSCR] & 0x0fffffff);                        \
+}                                                                              \
+void VFP_HELPER(cmpe, p)(type a, type b, CPUARMState *env)                     \
+{                                                                              \
+    uint32_t flags;                                                            \
+    switch(type ## _compare(a, b, &env->vfp.fp_status)) {                      \
+    case float_relation_equal:     flags = PSTATE_Z | PSTATE_C; break;         \
+    case float_relation_less:      flags = PSTATE_N;            break;         \
+    case float_relation_greater:   flags = PSTATE_C;            break;         \
+    default:                                                                   \
+    case float_relation_unordered: flags = PSTATE_V | PSTATE_C; break;         \
+    }                                                                          \
+    env->vfp.xregs[ARM_VFP_FPSCR] = (flags << 28)                              \
+        | (env->vfp.xregs[ARM_VFP_FPSCR] & 0x0fffffff);                        \
 }
 DO_VFP_cmp(s, float32)
 DO_VFP_cmp(d, float64)
