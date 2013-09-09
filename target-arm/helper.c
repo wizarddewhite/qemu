@@ -3521,16 +3521,16 @@ void HELPER(vfp_set_fpscr)(CPUARMState *env, uint32_t val)
     if (changed & (3 << 22)) {
         i = (val >> 22) & 3;
         switch (i) {
-        case 0:
+        case ROUND_MODE_TIEEVEN:
             i = float_round_nearest_even;
             break;
-        case 1:
+        case ROUND_MODE_UP:
             i = float_round_up;
             break;
-        case 2:
+        case ROUND_MODE_DOWN:
             i = float_round_down;
             break;
-        case 3:
+        case ROUND_MODE_ZERO:
             i = float_round_to_zero;
             break;
         }
