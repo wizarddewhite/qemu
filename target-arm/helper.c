@@ -3604,7 +3604,7 @@ float64 VFP_HELPER(sqrt, d)(float64 a, CPUARMState *env)
 
 /* XXX: check quiet/signaling case */
 #define DO_VFP_cmp(p, type)                                                    \
-void VFP_HELPER(cmp, p)(type a, type b, CPUARMState *env)                      \
+uint32_t VFP_HELPER(cmp, p)(type a, type b, CPUARMState *env)                  \
 {                                                                              \
     uint32_t flags;                                                            \
     switch(type ## _compare_quiet(a, b, &env->vfp.fp_status)) {                \
@@ -3614,10 +3614,15 @@ void VFP_HELPER(cmp, p)(type a, type b, CPUARMState *env)                      \
     default:                                                                   \
     case float_relation_unordered: flags = PSTATE_V | PSTATE_C; break;         \
     }                                                                          \
+    return flags;                                                              \
+}                                                                              \
+void VFP_HELPER(fpscr_cmp, p)(type a, type b, CPUARMState *env)                \
+{                                                                              \
+    uint32_t flags = VFP_HELPER(cmp, p)(a, b, env);                            \
     env->vfp.xregs[ARM_VFP_FPSCR] = (flags << 28)                              \
         | (env->vfp.xregs[ARM_VFP_FPSCR] & 0x0fffffff);                        \
 }                                                                              \
-void VFP_HELPER(cmpe, p)(type a, type b, CPUARMState *env)                     \
+uint32_t VFP_HELPER(cmpe, p)(type a, type b, CPUARMState *env)                 \
 {                                                                              \
     uint32_t flags;                                                            \
     switch(type ## _compare(a, b, &env->vfp.fp_status)) {                      \
@@ -3627,6 +3632,11 @@ void VFP_HELPER(cmpe, p)(type a, type b, CPUARMState *env)                     \
     default:                                                                   \
     case float_relation_unordered: flags = PSTATE_V | PSTATE_C; break;         \
     }                                                                          \
+    return flags;                                                              \
+}                                                                              \
+void VFP_HELPER(fpscr_cmpe, p)(type a, type b, CPUARMState *env)               \
+{                                                                              \
+    uint32_t flags = VFP_HELPER(cmpe, p)(a, b, env);                           \
     env->vfp.xregs[ARM_VFP_FPSCR] = (flags << 28)                              \
         | (env->vfp.xregs[ARM_VFP_FPSCR] & 0x0fffffff);                        \
 }
