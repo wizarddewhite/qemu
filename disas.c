@@ -150,7 +150,7 @@ bfd_vma bfd_getb16 (const bfd_byte *addr)
   return (bfd_vma) v;
 }
 
-#ifdef TARGET_ARM
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
 static int
 print_insn_thumb1(bfd_vma pc, disassemble_info *info)
 {
@@ -224,6 +224,8 @@ void target_disas(FILE *out, CPUArchState *env, target_ulong code,
         s.info.mach = bfd_mach_i386_i386;
     }
     print_insn = print_insn_i386;
+#elif defined(TARGET_AARCH64)
+    print_insn = print_insn_aarch64;
 #elif defined(TARGET_ARM)
     if (flags & 1) {
         print_insn = print_insn_thumb1;
@@ -464,6 +466,8 @@ void monitor_disas(Monitor *mon, CPUArchState *env,
         s.info.mach = bfd_mach_i386_i386;
     }
     print_insn = print_insn_i386;
+#elif defined(TARGET_AARCH64)
+    print_insn = print_insn_aarch64;
 #elif defined(TARGET_ARM)
     print_insn = print_insn_arm;
 #elif defined(TARGET_ALPHA)
