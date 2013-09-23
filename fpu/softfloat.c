@@ -41,6 +41,7 @@ these four paragraphs for those parts of this code that are retained.
 #include "config.h"
 
 #include "fpu/softfloat.h"
+#include "assert.h"
 
 /*----------------------------------------------------------------------------
 | Primitive arithmetic functions, including multi-word arithmetic, and
@@ -1376,6 +1377,11 @@ int32 float32_to_int32( float32 a STATUS_PARAM )
     if ( 0 < shiftCount ) shift64RightJamming( aSig64, shiftCount, &aSig64 );
     return roundAndPackInt32( aSign, aSig64 STATUS_VAR );
 
+}
+
+int_fast16_t float32_to_int16( float32 a STATUS_PARAM )
+{
+    assert(0);
 }
 
 /*----------------------------------------------------------------------------
@@ -2760,6 +2766,11 @@ int32 float64_to_int32( float64 a STATUS_PARAM )
     if ( 0 < shiftCount ) shift64RightJamming( aSig, shiftCount, &aSig );
     return roundAndPackInt32( aSign, aSig STATUS_VAR );
 
+}
+
+int_fast16_t float64_to_int16( float64 a STATUS_PARAM )
+{
+    assert(0);
 }
 
 /*----------------------------------------------------------------------------
@@ -6446,6 +6457,11 @@ uint32 float32_to_uint32( float32 a STATUS_PARAM )
     return res;
 }
 
+uint_fast16_t float32_to_uint16( float32 a STATUS_PARAM )
+{
+    assert(0);
+}
+
 uint32 float32_to_uint32_round_to_zero( float32 a STATUS_PARAM )
 {
     int64_t v;
@@ -6498,6 +6514,11 @@ uint32 float64_to_uint32( float64 a STATUS_PARAM )
         res = v;
     }
     return res;
+}
+
+uint_fast16_t float64_to_uint16( float64 a STATUS_PARAM )
+{
+    assert(0);
 }
 
 uint32 float64_to_uint32_round_to_zero( float64 a STATUS_PARAM )
