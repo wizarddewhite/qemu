@@ -85,6 +85,21 @@ void aarch64_cpu_dump_state(CPUState *cs, FILE *f,
         env->pstate & PSTATE_C ? 'c' : '.',
         env->pstate & PSTATE_V ? 'v' : '.');
     cpu_fprintf(f, "\n");
+
+    if (flags & CPU_DUMP_FPU) {
+        int numvfpregs = 32;
+        for (i = 0; i < numvfpregs; i++) {
+            uint64_t v = float64_val(env->vfp.regs[i * 2]);
+            uint64_t v1 = float64_val(env->vfp.regs[(i * 2) + 1]);
+            if (!v && !v1) {
+                /* skip empty registers - makes traces easier to read */
+                continue;
+            }
+            cpu_fprintf(f, "d%02d.0=%016" PRIx64 " " "d%02d.0=%016" PRIx64 "\n",
+                        i, v, i, v1);
+        }
+        cpu_fprintf(f, "FPSCR: %08x\n", (int)env->vfp.xregs[ARM_VFP_FPSCR]);
+    }
 }
 
 void gen_a64_set_pc_im(uint64_t val)
