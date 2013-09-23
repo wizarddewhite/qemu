@@ -744,6 +744,91 @@ static void handle_add(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_result);
 }
 
+/* SIMD load/store multiple (post-indexed) */
+static void handle_simdldstm(DisasContext *s, uint32_t insn, bool is_wback)
+{
+    int rd = extract32(insn, 0, 5);
+    int rn = extract32(insn, 5, 5);
+    int rm = extract32(insn, 16, 5);
+    int size = extract32(insn, 10, 2);
+    int opcode = extract32(insn, 12, 4);
+    bool is_store = !extract32(insn, 22, 1);
+    bool is_q = extract32(insn, 30, 1);
+    TCGv_i64 tcg_tmp = tcg_temp_new_i64();
+    TCGv_i64 tcg_addr = tcg_temp_new_i64();
+    int r, e, xs, tt, rpt, selem;
+    int ebytes = 1 << size;
+    int elements = (is_q ? 128 : 64) / (8 << size);
+
+    tcg_gen_mov_i64(tcg_addr, cpu_reg_sp(rn));
+
+    switch (opcode) {
+    case 0x0:
+        rpt = 1;
+        selem = 4;
+        break;
+    case 0x2:
+        rpt = 4;
+        selem = 1;
+        break;
+    case 0x4:
+        rpt = 1;
+        selem = 3;
+        break;
+    case 0x6:
+        rpt = 3;
+        selem = 1;
+        break;
+    case 0x7:
+        rpt = 1;
+        selem = 1;
+        break;
+    case 0x8:
+        rpt = 1;
+        selem = 2;
+        break;
+    case 0xa:
+        rpt = 2;
+        selem = 1;
+        break;
+    default:
+        unallocated_encoding(s);
+        return;
+    }
+
+    if (size == 3 && !is_q && selem != 1) {
+        /* reserved */
+        unallocated_encoding(s);
+    }
+
+    /* XXX check SP alignment on Rn */
+
+    for (r = 0; r < rpt; r++) {
+        for (e = 0; e < elements; e++) {
+            tt = (rd + r) % 32;
+            for (xs = 0; xs < selem; xs++) {
+                int freg_offs = offsetof(CPUARMState, vfp.regs[tt * 2]) +
+                                  (e * ebytes);
+
+                ldst_do_vec_int(s, freg_offs, tcg_addr, size, is_store);
+                tcg_gen_addi_i64(tcg_addr, tcg_addr, ebytes);
+                tt = (tt + 1) % 32;
+            }
+        }
+    }
+
+    if (is_wback) {
+        if (rm == 31) {
+            tcg_gen_mov_i64(cpu_reg_sp(rn), tcg_addr);
+        } else {
+            tcg_gen_add_i64(cpu_reg_sp(rn), cpu_reg(rn), cpu_reg(rm));
+        }
+    }
+
+    tcg_temp_free_i64(tcg_tmp);
+    tcg_temp_free_i64(tcg_addr);
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -785,6 +870,12 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
     case 0x0c:
         if (extract32(insn, 29, 1)) {
             handle_stp(s, insn);
+        } else if (!extract32(insn, 31, 1) && extract32(insn, 23, 1) &&
+                   !extract32(insn, 21, 1)) {
+            handle_simdldstm(s, insn, true);
+        } else if (!extract32(insn, 31, 1) && !extract32(insn, 29, 1) &&
+                   !extract32(insn, 23, 1) && !extract32(insn, 16, 6)) {
+            handle_simdldstm(s, insn, false);
         } else {
             unallocated_encoding(s);
         }
