@@ -186,6 +186,27 @@ static void handle_b(DisasContext *s, uint32_t insn)
     gen_goto_tb(s, 0, addr);
 }
 
+static void handle_br(DisasContext *s, uint32_t insn)
+{
+    int branch_type = extract32(insn, 21, 2);
+    int source = extract32(insn, 5, 5);
+
+    switch (branch_type) {
+    case 0: /* JMP */
+    case 2: /* RET */
+        break;
+    case 1: /* CALL */
+        tcg_gen_movi_i64(cpu_reg(30), s->pc);
+        break;
+    case 3:
+        unallocated_encoding(s);
+        return;
+    }
+
+    tcg_gen_mov_i64(cpu_pc, cpu_reg(source));
+    s->is_jmp = DISAS_JUMP;
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -200,6 +221,12 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
     case 0x5:
         handle_b(s, insn);
         goto insn_done;
+    case 0x35:
+        if ((insn & 0xff9ffc1f) == 0xd61f0000) {
+            handle_br(s, insn);
+            goto insn_done;
+        }
+        break;
     }
 
     switch ((insn >> 24) & 0x1f) {
