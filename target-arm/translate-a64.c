@@ -102,6 +102,12 @@ void aarch64_cpu_dump_state(CPUState *cs, FILE *f,
     }
 }
 
+static int get_mem_index(DisasContext *s)
+{
+    /* XXX only user mode for now */
+    return 1;
+}
+
 void gen_a64_set_pc_im(uint64_t val)
 {
     tcg_gen_movi_i64(cpu_pc, val);
@@ -133,6 +139,7 @@ static void real_unallocated_encoding(DisasContext *s)
     real_unallocated_encoding(s); \
     } while (0)
 
+
 static TCGv_i64 cpu_reg(int reg)
 {
     if (reg == 31) {
@@ -141,6 +148,20 @@ static TCGv_i64 cpu_reg(int reg)
     } else {
         return cpu_X[reg];
     }
+}
+
+static TCGv_i64 cpu_reg_sp(int reg)
+{
+    return cpu_X[reg];
+}
+
+static void clear_fpreg(int dest)
+{
+    int freg_offs = offsetof(CPUARMState, vfp.regs[dest * 2]);
+    TCGv_i64 tcg_zero = tcg_const_i64(0);
+
+    tcg_gen_st_i64(tcg_zero, cpu_env, freg_offs);
+    tcg_gen_st_i64(tcg_zero, cpu_env, freg_offs + sizeof(float64));
 }
 
 static inline bool use_goto_tb(DisasContext *s, int n, uint64_t dest)
@@ -207,6 +228,221 @@ static void handle_br(DisasContext *s, uint32_t insn)
     s->is_jmp = DISAS_JUMP;
 }
 
+static void ldst_do_vec_int(DisasContext *s, int freg_offs, TCGv_i64 tcg_addr,
+                            int size, bool is_store)
+{
+    TCGv_i64 tcg_tmp = tcg_temp_new_i64();
+
+    if (is_store) {
+        switch (size) {
+        case 0:
+            tcg_gen_ld8u_i64(tcg_tmp, cpu_env, freg_offs);
+            tcg_gen_qemu_st8(tcg_tmp, tcg_addr, get_mem_index(s));
+            break;
+        case 1:
+            tcg_gen_ld16u_i64(tcg_tmp, cpu_env, freg_offs);
+            tcg_gen_qemu_st16(tcg_tmp, tcg_addr, get_mem_index(s));
+            break;
+        case 2:
+            tcg_gen_ld32u_i64(tcg_tmp, cpu_env, freg_offs);
+            tcg_gen_qemu_st32(tcg_tmp, tcg_addr, get_mem_index(s));
+            break;
+        case 4:
+            tcg_gen_ld_i64(tcg_tmp, cpu_env, freg_offs);
+            tcg_gen_qemu_st64(tcg_tmp, tcg_addr, get_mem_index(s));
+            freg_offs += sizeof(uint64_t);
+            tcg_gen_addi_i64(tcg_addr, tcg_addr, sizeof(uint64_t));
+            /* fall through */
+        case 3:
+            tcg_gen_ld_i64(tcg_tmp, cpu_env, freg_offs);
+            tcg_gen_qemu_st64(tcg_tmp, tcg_addr, get_mem_index(s));
+            break;
+        }
+    } else {
+        switch (size) {
+        case 0:
+            tcg_gen_qemu_ld8u(tcg_tmp, tcg_addr, get_mem_index(s));
+            tcg_gen_st8_i64(tcg_tmp, cpu_env, freg_offs);
+            break;
+        case 1:
+            tcg_gen_qemu_ld16u(tcg_tmp, tcg_addr, get_mem_index(s));
+            tcg_gen_st16_i64(tcg_tmp, cpu_env, freg_offs);
+            break;
+        case 2:
+            tcg_gen_qemu_ld32u(tcg_tmp, tcg_addr, get_mem_index(s));
+            tcg_gen_st32_i64(tcg_tmp, cpu_env, freg_offs);
+            break;
+        case 4:
+            tcg_gen_qemu_ld64(tcg_tmp, tcg_addr, get_mem_index(s));
+            tcg_gen_st_i64(tcg_tmp, cpu_env, freg_offs);
+            freg_offs += sizeof(uint64_t);
+            tcg_gen_addi_i64(tcg_addr, tcg_addr, sizeof(uint64_t));
+            /* fall through */
+        case 3:
+            tcg_gen_qemu_ld64(tcg_tmp, tcg_addr, get_mem_index(s));
+            tcg_gen_st_i64(tcg_tmp, cpu_env, freg_offs);
+            break;
+        }
+    }
+
+    tcg_temp_free_i64(tcg_tmp);
+}
+
+static void ldst_do_vec(DisasContext *s, int dest, TCGv_i64 tcg_addr_real,
+                        int size, bool is_store)
+{
+    TCGv_i64 tcg_addr = tcg_temp_new_i64();
+    int freg_offs = offsetof(CPUARMState, vfp.regs[dest * 2]);
+
+    /* we don't want to modify the caller's tcg_addr */
+    tcg_gen_mov_i64(tcg_addr, tcg_addr_real);
+
+    if (!is_store) {
+        /* normal ldst clears non-loaded bits */
+        clear_fpreg(dest);
+    }
+
+    ldst_do_vec_int(s, freg_offs, tcg_addr, size, is_store);
+
+    tcg_temp_free(tcg_addr);
+}
+
+static void ldst_do_gpr(DisasContext *s, int dest, TCGv_i64 tcg_addr, int size,
+                        bool is_store, bool is_signed)
+{
+    if (is_store) {
+        switch (size) {
+        case 0:
+            tcg_gen_qemu_st8(cpu_reg(dest), tcg_addr, get_mem_index(s));
+            break;
+        case 1:
+            tcg_gen_qemu_st16(cpu_reg(dest), tcg_addr, get_mem_index(s));
+            break;
+        case 2:
+            tcg_gen_qemu_st32(cpu_reg(dest), tcg_addr, get_mem_index(s));
+            break;
+        case 3:
+            tcg_gen_qemu_st64(cpu_reg(dest), tcg_addr, get_mem_index(s));
+            break;
+        }
+    } else {
+        if (is_signed) {
+            /* XXX check what impact regsize has */
+            switch (size) {
+            case 0:
+                tcg_gen_qemu_ld8s(cpu_reg(dest), tcg_addr, get_mem_index(s));
+                break;
+            case 1:
+                tcg_gen_qemu_ld16s(cpu_reg(dest), tcg_addr, get_mem_index(s));
+                break;
+            case 2:
+                tcg_gen_qemu_ld32s(cpu_reg(dest), tcg_addr, get_mem_index(s));
+                break;
+            case 3:
+                tcg_gen_qemu_ld64(cpu_reg(dest), tcg_addr, get_mem_index(s));
+                break;
+            }
+        } else {
+            switch (size) {
+            case 0:
+                tcg_gen_qemu_ld8u(cpu_reg(dest), tcg_addr, get_mem_index(s));
+                break;
+            case 1:
+                tcg_gen_qemu_ld16u(cpu_reg(dest), tcg_addr, get_mem_index(s));
+                break;
+            case 2:
+                tcg_gen_qemu_ld32u(cpu_reg(dest), tcg_addr, get_mem_index(s));
+                break;
+            case 3:
+                tcg_gen_qemu_ld64(cpu_reg(dest), tcg_addr, get_mem_index(s));
+                break;
+            }
+        }
+    }
+}
+
+static void ldst_do(DisasContext *s, int dest, TCGv_i64 tcg_addr, int size,
+                    bool is_store, bool is_signed, bool is_vector)
+{
+    if (is_vector) {
+        ldst_do_vec(s, dest, tcg_addr, size, is_store);
+    } else {
+        ldst_do_gpr(s, dest, tcg_addr, size, is_store, is_signed);
+    }
+}
+
+static void handle_stp(DisasContext *s, uint32_t insn)
+{
+    int rt = extract32(insn, 0, 5);
+    int rn = extract32(insn, 5, 5);
+    int rt2 = extract32(insn, 10, 5);
+    int offset = sextract32(insn, 15, 7);
+    int is_store = !extract32(insn, 22, 1);
+    int type = extract32(insn, 23, 2);
+    int is_vector = extract32(insn, 26, 1);
+    int is_signed = extract32(insn, 30, 1);
+    int is_32bit = !extract32(insn, 31, 1);
+    TCGv_i64 tcg_addr;
+    bool postindex;
+    bool wback;
+    int size = is_32bit ? 2 : 3;
+
+    if (is_vector) {
+        size = 2 + extract32(insn, 30, 2);
+    }
+
+    switch (type) {
+    default:
+    case 0:
+        postindex = false;
+        wback = false;
+        break;
+    case 1: /* STP (post-index) */
+        postindex = true;
+        wback = true;
+        break;
+    case 2: /* STP (signed offset */
+        postindex = false;
+        wback = false;
+        break;
+    case 3: /* STP (pre-index) */
+        postindex = false;
+        wback = true;
+        break;
+    }
+
+    if (is_signed && !is_32bit) {
+        unallocated_encoding(s);
+        return;
+    }
+
+    offset <<= size;
+
+    tcg_addr = tcg_temp_new_i64();
+    if (rn == 31) {
+        /* XXX check SP alignment */
+    }
+    tcg_gen_mov_i64(tcg_addr, cpu_reg_sp(rn));
+
+    if (!postindex) {
+        tcg_gen_addi_i64(tcg_addr, tcg_addr, offset);
+    }
+
+    ldst_do(s, rt, tcg_addr, size, is_store, is_signed, is_vector);
+    tcg_gen_addi_i64(tcg_addr, tcg_addr, 1 << size);
+    ldst_do(s, rt2, tcg_addr, size, is_store, is_signed, is_vector);
+    tcg_gen_subi_i64(tcg_addr, tcg_addr, 1 << size);
+
+    if (wback) {
+        if (postindex) {
+            tcg_gen_addi_i64(tcg_addr, tcg_addr, offset);
+        }
+        tcg_gen_mov_i64(cpu_reg_sp(rn), tcg_addr);
+    }
+
+    tcg_temp_free_i64(tcg_addr);
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -229,7 +465,30 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         break;
     }
 
+    /* Typical major opcode encoding */
     switch ((insn >> 24) & 0x1f) {
+    case 0x08:
+    case 0x09:
+        if (extract32(insn, 29, 1)) {
+            handle_stp(s, insn);
+        } else {
+            unallocated_encoding(s);
+        }
+        break;
+    case 0x0c:
+        if (extract32(insn, 29, 1)) {
+            handle_stp(s, insn);
+        } else {
+            unallocated_encoding(s);
+        }
+        break;
+    case 0x0d:
+        if (extract32(insn, 29, 1)) {
+            handle_stp(s, insn);
+        } else {
+            unallocated_encoding(s);
+        }
+        break;
     default:
         unallocated_encoding(s);
         break;
