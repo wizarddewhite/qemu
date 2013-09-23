@@ -24,3 +24,31 @@
 #include "sysemu/sysemu.h"
 #include "qemu/bitops.h"
 
+uint32_t HELPER(pstate_add)(uint32_t pstate, uint64_t a1, uint64_t a2,
+                            uint64_t ar)
+{
+    int64_t s1 = a1;
+    int64_t s2 = a2;
+    int64_t sr = ar;
+
+    pstate &= ~(PSTATE_N | PSTATE_Z | PSTATE_C | PSTATE_V);
+
+    if (sr < 0) {
+        pstate |= PSTATE_N;
+    }
+
+    if (!ar) {
+        pstate |= PSTATE_Z;
+    }
+
+    if (ar && (ar < a1)) {
+        pstate |= PSTATE_C;
+    }
+
+    if ((s1 > 0 && s2 > 0 && sr < 0) ||
+        (s1 < 0 && s2 < 0 && sr > 0)) {
+        pstate |= PSTATE_V;
+    }
+
+    return pstate;
+}

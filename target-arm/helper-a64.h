@@ -17,3 +17,4 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+DEF_HELPER_FLAGS_4(pstate_add, TCG_CALL_NO_RWG_SE, i32, i32, i64, i64, i64)
