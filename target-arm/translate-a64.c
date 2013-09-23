@@ -448,6 +448,42 @@ static void handle_stp(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_addr);
 }
 
+static void handle_ldarx(DisasContext *s, uint32_t insn)
+{
+    int rt = get_reg(insn);
+    int rn = get_bits(insn, 5, 5);
+    int rt2 = get_bits(insn, 10, 5);
+    int is_atomic = !get_bits(insn, 15, 1);
+    int rs = get_bits(insn, 16, 5);
+    int is_pair = get_bits(insn, 21, 1);
+    int is_store = !get_bits(insn, 22, 1);
+    int is_excl = !get_bits(insn, 23, 1);
+    int size = get_bits(insn, 30, 2);
+    TCGv_i64 tcg_addr;
+
+    tcg_addr = tcg_temp_new_i64();
+    if (rn == 31) {
+        /* XXX check SP alignment */
+    }
+    tcg_gen_mov_i64(tcg_addr, cpu_reg_sp(rn));
+
+    if (is_atomic) {
+        /* XXX add locking */
+    }
+    if (is_store && is_excl) {
+        /* XXX find out what status it wants */
+        tcg_gen_movi_i64(cpu_reg(rs), 0);
+    }
+
+    ldst_do_gpr(s, rt, tcg_addr, size, is_store, false);
+    if (is_pair) {
+        tcg_gen_addi_i64(tcg_addr, tcg_addr, 1 << size);
+        ldst_do_gpr(s, rt2, tcg_addr, size, is_store, false);
+    }
+
+    tcg_temp_free_i64(tcg_addr);
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -477,7 +513,7 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         if (get_bits(insn, 29, 1)) {
             handle_stp(s, insn);
         } else {
-            unallocated_encoding(s);
+            handle_ldarx(s, insn);
         }
         break;
     case 0x0c:
