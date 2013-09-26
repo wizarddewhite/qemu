@@ -216,3 +216,19 @@ out:
 
     return r;
 }
+
+uint64_t HELPER(udiv64)(uint64_t num, uint64_t den)
+{
+    if (den == 0)
+      return 0;
+    return num / den;
+}
+
+int64_t HELPER(sdiv64)(int64_t num, int64_t den)
+{
+    if (den == 0)
+      return 0;
+    if (num == LLONG_MIN && den == -1)
+      return LLONG_MIN;
+    return num / den;
+}
