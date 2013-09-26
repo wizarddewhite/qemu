@@ -261,3 +261,17 @@ uint64_t HELPER(clz64)(uint64_t x)
 {
     return clz64(x);
 }
+
+uint64_t HELPER(umulh)(uint64_t n, uint64_t m)
+{
+    uint64_t rl, rh;
+    mulu64(&rl, &rh, n, m);
+    return rh;
+}
+
+uint64_t HELPER(smulh)(uint64_t n, uint64_t m)
+{
+    uint64_t rl, rh;
+    muls64(&rl, &rh, n, m);
+    return rh;
+}
