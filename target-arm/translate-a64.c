@@ -1507,6 +1507,47 @@ static void handle_cinc(DisasContext *s, uint32_t insn)
     gen_helper_cinc(cpu_reg(rd), pstate, tcg_insn, cpu_reg(rn), cpu_reg(rm));
 }
 
+static void handle_div(DisasContext *s, uint32_t insn)
+{
+    int rd = get_reg(insn);
+    int rn = get_bits(insn, 5, 5);
+    int rm = get_bits(insn, 16, 5);
+    bool is_signed = get_bits(insn, 10, 1);
+    bool is_32bit = !get_bits(insn, 31, 1);
+    TCGv_i64 n = tcg_temp_new_i64();
+    TCGv_i64 m = tcg_temp_new_i64();
+
+    if (is_32bit) {
+        if (is_signed) {
+            tcg_gen_ext32s_i64(n, cpu_reg(rn));
+            tcg_gen_ext32s_i64(m, cpu_reg(rm));
+        } else {
+            tcg_gen_ext32u_i64(n, cpu_reg(rn));
+            tcg_gen_ext32u_i64(m, cpu_reg(rm));
+        }
+    } else {
+        tcg_gen_mov_i64(n, cpu_reg(rn));
+        tcg_gen_mov_i64(m, cpu_reg(rm));
+    }
+
+    if (is_signed) {
+        gen_helper_sdiv64(cpu_reg(rd), n, m);
+    } else {
+        gen_helper_udiv64(cpu_reg(rd), n, m);
+    }
+
+    if (is_32bit) {
+        if (is_signed) {
+            tcg_gen_ext32s_i64(cpu_reg(rd), cpu_reg(rd));
+        } else {
+            tcg_gen_ext32u_i64(cpu_reg(rd), cpu_reg(rd));
+        }
+    }
+
+    tcg_temp_free_i64(n);
+    tcg_temp_free_i64(m);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2069,6 +2110,8 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
     case 0x1a:
         if ((insn & 0x3fe00800) == 0x1a800000) {
             handle_cinc(s, insn);
+        } else if ((insn & 0x7fe0f800) == 0x1ac00800) {
+            handle_div(s, insn);
         } else {
             unallocated_encoding(s);
         }
