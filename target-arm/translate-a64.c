@@ -2028,6 +2028,82 @@ static void handle_fcmp(DisasContext *s, uint32_t insn)
     tcg_temp_free_i32(tcg_op2_32);
 }
 
+/* Floating-point data-processing (1 source) - 32 bit */
+static void handle_fpdp1s32(DisasContext *s, uint32_t insn)
+{
+    int rd = extract32(insn, 0, 5);
+    int rn = extract32(insn, 5, 5);
+    int opcode = extract32(insn, 15, 6);
+    int freg_offs_n = offsetof(CPUARMState, vfp.regs[rn * 2]);
+    int freg_offs_d = offsetof(CPUARMState, vfp.regs[rd * 2]);
+    TCGv_i64 tcg_tmp = tcg_temp_new_i64();
+    TCGv_i32 tcg_op = tcg_temp_new_i32();
+    TCGv_i32 tcg_res = tcg_temp_new_i32();
+    TCGv_ptr fpst = get_fpstatus_ptr();
+    bool skip_write = false;
+
+    tcg_gen_ld_i64(tcg_tmp, cpu_env, freg_offs_n);
+    tcg_gen_trunc_i64_i32(tcg_op, tcg_tmp);
+
+    switch (opcode) {
+    case 0x0: /* FMOV */
+        tcg_gen_mov_i32(tcg_res, tcg_op);
+        break;
+    case 0x1: /* FABS */
+        gen_helper_vfp_abss(tcg_res, tcg_op);
+        break;
+    case 0x2: /* FNEG */
+        gen_helper_vfp_negs(tcg_res, tcg_op);
+        break;
+    case 0x3: /* FSQRT */
+        gen_helper_vfp_sqrts(tcg_res, tcg_op, cpu_env);
+        break;
+    case 0x5: /* FCVT (single to double) */
+        skip_write = true;
+        gen_helper_vfp_fcvtds(tcg_tmp, tcg_op, cpu_env);
+        clear_fpreg(rd);
+        tcg_gen_st_i64(tcg_tmp, cpu_env, freg_offs_d);
+        break;
+    case 0x7: /* FCVT (single to half) */
+        /* XXX */
+        unallocated_encoding(s);
+        return;
+    case 0x8: /* FRINTN XXX add rounding mode */
+    case 0x9: /* FRINTP */
+    case 0xa: /* FRINTM */
+    case 0xb: /* FRINTZ */
+    case 0xc: /* FRINTA */
+    case 0xe: /* FRINTX */
+    case 0xf: /* FRINTI */
+    {
+        TCGv_i32 tcg_rmode = tcg_const_i32(opcode & 7);
+
+        gen_helper_set_rmode(tcg_rmode, fpst);
+        gen_helper_rints(tcg_res, tcg_op, fpst);
+
+        /* XXX use fpcr */
+        tcg_gen_movi_i32(tcg_rmode, -1);
+        gen_helper_set_rmode(tcg_rmode, fpst);
+        tcg_temp_free_i32(tcg_rmode);
+        break;
+    }
+    default:
+        unallocated_encoding(s);
+        return;
+    }
+
+    if (!skip_write) {
+        clear_fpreg(rd);
+        tcg_gen_extu_i32_i64(tcg_tmp, tcg_res);
+        tcg_gen_st32_i64(tcg_tmp, cpu_env, freg_offs_d);
+    }
+
+    tcg_temp_free_ptr(fpst);
+    tcg_temp_free_i32(tcg_op);
+    tcg_temp_free_i32(tcg_res);
+    tcg_temp_free_i64(tcg_tmp);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2619,6 +2695,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else if (!extract32(insn, 29, 3) && extract32(insn, 21, 1) &&
                    (extract32(insn, 10, 6) == 0x8) && !extract32(insn, 0, 3)) {
             handle_fcmp(s, insn);
+        } else if (!extract32(insn, 29, 3) && !extract32(insn, 22, 2) &&
+                   extract32(insn, 21, 1) && (extract32(insn, 10, 5) == 0x10)) {
+            handle_fpdp1s32(s, insn);
         } else {
             unallocated_encoding(s);
         }

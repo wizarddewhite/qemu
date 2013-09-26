@@ -292,3 +292,8 @@ void HELPER(set_rmode)(uint32_t rmode, void *fp_status)
 
     set_float_rounding_mode(rmode, fp_status);
 }
+
+float32 HELPER(rints)(float32 x, void *fp_status)
+{
+    return float32_round_to_int(x, fp_status);
+}
