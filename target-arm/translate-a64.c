@@ -923,6 +923,42 @@ static void handle_umov(DisasContext *s, uint32_t insn)
     }
 }
 
+static void handle_insg(DisasContext *s, uint32_t insn)
+{
+    int rd = get_bits(insn, 0, 5);
+    int rn = get_bits(insn, 5, 5);
+    int imm5 = get_bits(insn, 16, 6);
+    int freg_offs_d = offsetof(CPUARMState, vfp.regs[rd * 2]);
+    int size;
+    int idx;
+
+    for (size = 0; !(imm5 & (1 << size)); size++) {
+        if (size > 3) {
+            unallocated_encoding(s);
+            return;
+        }
+    }
+
+    switch (size) {
+    case 0:
+        idx = get_bits(imm5, 1, 4) << 0;
+        tcg_gen_st8_i64(cpu_reg(rn), cpu_env, freg_offs_d + idx);
+        break;
+    case 1:
+        idx = get_bits(imm5, 2, 3) << 1;
+        tcg_gen_st16_i64(cpu_reg(rn), cpu_env, freg_offs_d + idx);
+        break;
+    case 2:
+        idx = get_bits(imm5, 3, 2) << 2;
+        tcg_gen_st32_i64(cpu_reg(rn), cpu_env, freg_offs_d + idx);
+        break;
+    case 3:
+        idx = get_bits(imm5, 4, 1) << 3;
+        tcg_gen_st_i64(cpu_reg(rn), cpu_env, freg_offs_d + idx);
+        break;
+    }
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -988,6 +1024,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else if (!get_bits(insn, 31, 1) && !get_bits(insn, 29, 1) &&
             (get_bits(insn, 10, 6) == 0xf)) {
             handle_umov(s, insn);
+        } else if ((get_bits(insn, 29, 3) == 2) && !get_bits(insn, 21, 3) &&
+            (get_bits(insn, 10, 6) == 0x7)) {
+            handle_insg(s, insn);
         } else {
             unallocated_encoding(s);
         }
