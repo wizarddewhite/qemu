@@ -232,3 +232,22 @@ int64_t HELPER(sdiv64)(int64_t num, int64_t den)
       return LLONG_MIN;
     return num / den;
 }
+
+uint64_t HELPER(rbit64)(uint64_t x)
+{
+    x =  ((x & 0xff00000000000000ULL) >> 56)
+       | ((x & 0x00ff000000000000ULL) >> 40)
+       | ((x & 0x0000ff0000000000ULL) >> 24)
+       | ((x & 0x000000ff00000000ULL) >> 8)
+       | ((x & 0x00000000ff000000ULL) << 8)
+       | ((x & 0x0000000000ff0000ULL) << 24)
+       | ((x & 0x000000000000ff00ULL) << 40)
+       | ((x & 0x00000000000000ffULL) << 56);
+    x =  ((x & 0xf0f0f0f0f0f0f0f0ULL) >> 4)
+       | ((x & 0x0f0f0f0f0f0f0f0fULL) << 4);
+    x =  ((x & 0x8888888888888888ULL) >> 3)
+       | ((x & 0x4444444444444444ULL) >> 1)
+       | ((x & 0x2222222222222222ULL) << 1)
+       | ((x & 0x1111111111111111ULL) << 3);
+    return x;
+}
