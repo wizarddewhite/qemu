@@ -1497,6 +1497,16 @@ out:
     tcg_temp_free_i64(tcg_addr);
 }
 
+static void handle_cinc(DisasContext *s, uint32_t insn)
+{
+    int rd = get_reg(insn);
+    int rn = get_bits(insn, 5, 5);
+    int rm = get_bits(insn, 16, 5);
+    TCGv_i32 tcg_insn = tcg_const_i32(insn);
+
+    gen_helper_cinc(cpu_reg(rd), pstate, tcg_insn, cpu_reg(rn), cpu_reg(rm));
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2054,6 +2064,13 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             handle_ldst(s, insn);
         } else {
             handle_ld_literal(s, insn);
+        }
+        break;
+    case 0x1a:
+        if ((insn & 0x3fe00800) == 0x1a800000) {
+            handle_cinc(s, insn);
+        } else {
+            unallocated_encoding(s);
         }
         break;
     default:
