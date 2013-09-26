@@ -1566,6 +1566,42 @@ static void handle_shift_reg(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_shifted);
 }
 
+static void handle_rev(DisasContext *s, uint32_t insn)
+{
+    int rd = get_reg(insn);
+    int rn = get_bits(insn, 5, 5);
+    int opc = get_bits(insn, 10, 2);
+    bool is_32bit = !get_bits(insn, 31, 1);
+    TCGv_i32 tcg_tmp;
+
+    switch (opc) {
+    case 0x0: /* RBIT */
+        if (is_32bit) {
+            tcg_tmp = tcg_temp_new_i32();
+            tcg_gen_trunc_i64_i32(tcg_tmp, cpu_reg(rn));
+            gen_helper_rbit(tcg_tmp, tcg_tmp);
+            tcg_gen_extu_i32_i64(cpu_reg(rd), tcg_tmp);
+            tcg_temp_free_i32(tcg_tmp);
+        } else {
+            gen_helper_rbit64(cpu_reg(rd), cpu_reg(rn));
+        }
+        break;
+    case 0x1: /* REV16 */
+        tcg_gen_bswap16_i64(cpu_reg(rd), cpu_reg(rn));
+        break;
+    case 0x2: /* REV32 */
+        tcg_gen_bswap32_i64(cpu_reg(rd), cpu_reg(rn));
+        break;
+    case 0x3: /* REV64 */
+        tcg_gen_bswap64_i64(cpu_reg(rd), cpu_reg(rn));
+        break;
+    }
+
+    if (is_32bit) {
+        tcg_gen_ext32u_i64(cpu_reg(rd), cpu_reg(rd));
+    }
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2132,6 +2168,8 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             handle_div(s, insn);
         } else if ((insn & 0x7fe0f000) == 0x1ac02000) {
             handle_shift_reg(s, insn);
+        } else if ((insn & 0x7ffff000) == 0x5ac00000) {
+            handle_rev(s, insn);
         } else {
             unallocated_encoding(s);
         }
