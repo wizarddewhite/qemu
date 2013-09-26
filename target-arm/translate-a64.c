@@ -939,6 +939,27 @@ static void handle_insg(DisasContext *s, uint32_t insn)
     simd_st(cpu_reg(rn), freg_offs_d + idx, size);
 }
 
+/* PC relative address calculation */
+static void handle_adr(DisasContext *s, uint32_t insn)
+{
+    int reg = extract32(insn, 0, 5);
+    int is_page = extract32(insn, 31, 1);
+    uint64_t imm;
+    uint64_t base;
+
+    imm = sextract32(insn, 5, 19) << 2;
+    imm |= extract32(insn, 29, 2);
+
+    base = s->pc - 4;
+    if (is_page) {
+        /* ADRP (page based) */
+        base &= ~0xFFFULL;
+        imm <<= 12;
+    }
+
+    tcg_gen_movi_i64(cpu_reg(reg), base + imm);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -1360,6 +1381,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else {
             unallocated_encoding(s);
         }
+        break;
+    case 0x10:
+        handle_adr(s, insn);
         break;
     default:
         unallocated_encoding(s);
