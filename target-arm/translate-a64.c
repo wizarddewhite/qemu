@@ -1049,6 +1049,100 @@ static void handle_movi(DisasContext *s, uint32_t insn)
     }
 }
 
+static uint64_t replicate(uint64_t mask, int esize)
+{
+    int i;
+    uint64_t out_mask = 0;
+    for (i = 0; (i * esize) < 64; i++) {
+        out_mask = out_mask | (mask << (i * esize));
+    }
+    return out_mask;
+}
+
+static uint64_t bitmask(int len)
+{
+    if (len == 64) {
+        return -1;
+    }
+    return (1ULL << len) - 1;
+}
+
+static uint64_t decode_wmask(int immn, int imms, int immr)
+{
+    uint64_t mask;
+    int len = 31 - clz32((immn << 6) | (~imms & 0x3f));
+    int esize = 1 << len;
+    int levels = (esize - 1) & 0x3f;
+    int s = imms & levels;
+    int r = immr & levels;
+
+    mask = bitmask(s + 1);
+    mask = ((mask >> r) | (mask << (esize - r)));
+    mask &= bitmask(esize);
+    mask = replicate(mask, esize);
+
+    return mask;
+}
+
+static void handle_orri(DisasContext *s, uint32_t insn)
+{
+    int is_32bit = !get_bits(insn, 31, 1);
+    int is_n = get_bits(insn, 22, 1);
+    int opc = get_bits(insn, 29, 2);
+    int dest = get_reg(insn);
+    int source = get_bits(insn, 5, 5);
+    int imms = get_bits(insn, 10, 6);
+    int immr = get_bits(insn, 16, 6);
+    TCGv_i64 tcg_dst;
+    TCGv_i64 tcg_op2;
+    bool setflags = false;
+    uint64_t wmask;
+
+    if (is_32bit && is_n) {
+        /* reserved */
+        unallocated_encoding(s);
+    }
+
+    if (opc == 0x3) {
+        setflags = true;
+    }
+
+    if (setflags) {
+        tcg_dst = cpu_reg(dest);
+    } else {
+        tcg_dst = cpu_reg_sp(dest);
+    }
+
+    wmask = decode_wmask(is_n, imms, immr);
+    if (is_32bit) {
+        wmask = (uint32_t)wmask;
+    }
+    tcg_op2 = tcg_const_i64(wmask);
+
+    switch (opc) {
+    case 0x3:
+    case 0x0:
+        tcg_gen_and_i64(tcg_dst, cpu_reg(source), tcg_op2);
+        break;
+    case 0x1:
+        tcg_gen_or_i64(tcg_dst, cpu_reg(source), tcg_op2);
+        break;
+    case 0x2:
+        tcg_gen_xor_i64(tcg_dst, cpu_reg(source), tcg_op2);
+        break;
+    }
+
+    if (is_32bit) {
+        tcg_gen_ext32u_i64(tcg_dst, tcg_dst);
+    }
+
+    if (setflags) {
+        gen_helper_pstate_add(pstate, pstate, tcg_dst, cpu_reg(31), tcg_dst);
+    }
+
+    tcg_temp_free_i64(tcg_op2);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -1481,7 +1575,7 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         if (get_bits(insn, 23, 1)) {
             handle_movi(s, insn);
         } else {
-            unallocated_encoding(s);
+            handle_orri(s, insn);
         }
         break;
     default:
