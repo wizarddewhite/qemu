@@ -187,3 +187,32 @@ uint32_t HELPER(cond)(uint32_t pstate, uint32_t cond)
 
     return !!r;
 }
+
+uint64_t HELPER(cinc)(uint32_t pstate, uint32_t insn, uint64_t n, uint64_t m)
+{
+    bool else_inc = extract32(insn, 10, 1);
+    int cond = extract32(insn, 12, 4);
+    bool else_inv = extract32(insn, 30, 1);
+    bool is_32bit = !extract32(insn, 31, 1);
+    uint64_t r;
+
+    if (helper_cond(pstate, cond)) {
+        r = n;
+        goto out;
+    }
+
+    r = m;
+    if (else_inv) {
+        r = ~r;
+    }
+    if (else_inc) {
+        r++;
+    }
+
+out:
+    if (is_32bit) {
+        r = (uint32_t)r;
+    }
+
+    return r;
+}
