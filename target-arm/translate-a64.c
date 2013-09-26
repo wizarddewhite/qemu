@@ -1166,6 +1166,90 @@ static void handle_extr(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_res);
 }
 
+static void handle_bfm(DisasContext *s, uint32_t insn)
+{
+    bool is_32bit = !extract32(insn, 31, 1);
+    int opc = extract32(insn, 29, 2);
+    int dest = extract32(insn, 0, 5);
+    int source = extract32(insn, 5, 5);
+    int is_n = extract32(insn, 22, 1);
+    int imms = extract32(insn, 10, 6);
+    int immr = extract32(insn, 16, 6);
+    TCGv_i64 tcg_newmask;
+    uint64_t mask, tmask, topmask;
+    uint64_t signbit = 1;
+    int bitsize = is_32bit ? 32 : 64;
+
+    if (!is_32bit && !is_n) {
+        /* reserved */
+        unallocated_encoding(s);
+    }
+
+    if (is_32bit && (is_n || (immr & (1 << 5)) || imms & (1 << 5))) {
+        /* reserved */
+        unallocated_encoding(s);
+    }
+
+    tcg_newmask = tcg_temp_new_i64();
+
+    if (imms == 0x3f) {
+        tmask = mask = ~0ULL;
+    } else {
+        tmask = mask = ((1ULL << (imms + 1)) - 1);
+    }
+
+    tcg_gen_andi_i64(tcg_newmask, cpu_reg(source), mask);
+    if (imms < immr) {
+        tcg_gen_shli_i64(tcg_newmask, tcg_newmask, bitsize - immr);
+        tmask <<= bitsize - immr;
+        signbit <<= bitsize + imms - immr;
+        if (signbit == 0x8000000000000000ULL) {
+            /* Can't pad anymore - highest bit is already set */
+            topmask = 0;
+        } else {
+            topmask = ~((1ULL << (bitsize + imms - immr + 1)) - 1);
+        }
+    } else {
+        tcg_gen_shri_i64(tcg_newmask, tcg_newmask, immr);
+        tmask >>= immr;
+        signbit <<= imms - immr;
+        topmask = ~tmask;
+    }
+
+    if (is_32bit) {
+        tcg_gen_ext32u_i64(tcg_newmask, tcg_newmask);
+    }
+
+    switch (opc) {
+    case 0: { /* SBFM */
+        TCGv_i64 tcg_mask = tcg_const_i64(topmask);
+        TCGv_i64 tcg_signbit = tcg_const_i64(signbit);
+        gen_helper_sign_extend(cpu_reg(dest), tcg_newmask, tcg_signbit,
+                               tcg_mask);
+        tcg_temp_free_i64(tcg_mask);
+        tcg_temp_free_i64(tcg_signbit);
+        break;
+    }
+    case 1: /* BFM */
+        /* replace the field inside dest */
+        tcg_gen_andi_i64(cpu_reg(dest), cpu_reg(dest), ~tmask);
+        tcg_gen_or_i64(cpu_reg(dest), cpu_reg(dest), tcg_newmask);
+        break;
+    case 2: /* UBFM */
+        tcg_gen_mov_i64(cpu_reg(dest), tcg_newmask);
+        break;
+    default:
+        unallocated_encoding(s);
+        return;
+    }
+
+    if (is_32bit) {
+        tcg_gen_ext32u_i64(cpu_reg(dest), cpu_reg(dest));
+    }
+
+    tcg_temp_free_i64(tcg_newmask);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -1606,7 +1690,7 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             !extract32(insn, 29, 2)) {
             handle_extr(s, insn);
         } else {
-            unallocated_encoding(s);
+            handle_bfm(s, insn);
         }
         break;
     default:
