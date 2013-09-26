@@ -1221,6 +1221,53 @@ static void handle_ushll(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_tmp);
 }
 
+/* SIMD shift shl */
+static void handle_simdshl(DisasContext *s, uint32_t insn)
+{
+    int rd = extract32(insn, 0, 5);
+    int rn = extract32(insn, 5, 5);
+    int immh = extract32(insn, 19, 4);
+    bool is_q = extract32(insn, 30, 1);
+    int freg_offs_d = offsetof(CPUARMState, vfp.regs[rd * 2]);
+    int freg_offs_n = offsetof(CPUARMState, vfp.regs[rn * 2]);
+    TCGv_i64 tcg_tmp = tcg_temp_new_i64();
+    int i;
+    int ebytes;
+    int size;
+    int shift = extract32(insn, 16, 7);
+
+    size = clz32(immh) - (31 - 4);
+
+    if (size > 3) {
+        /* XXX implement 128bit operations */
+        unallocated_encoding(s);
+        return;
+    }
+
+    ebytes = 1 << size;
+    shift -= (8 << size);
+
+    if (!immh) {
+        /* XXX see asimdimm */
+        unallocated_encoding(s);
+        return;
+    }
+
+    for (i = 0; i < (16 / ebytes); i++) {
+        simd_ld(tcg_tmp, freg_offs_n + (i * ebytes), size);
+        tcg_gen_shli_i64(tcg_tmp, tcg_tmp, shift);
+        simd_st(tcg_tmp, freg_offs_d + (i * ebytes), size);
+    }
+
+    if (!is_q) {
+        TCGv_i64 tcg_zero = tcg_const_i64(0);
+        simd_st(tcg_zero, freg_offs_d + sizeof(float64), 3);
+        tcg_temp_free_i64(tcg_zero);
+    }
+
+    tcg_temp_free_i64(tcg_tmp);
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -1307,6 +1354,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else if (!extract32(insn, 31, 1) && !extract32(insn, 23, 1) &&
                    (extract32(insn, 10, 6) == 0x29)) {
             handle_ushll(s, insn);
+        } else if (!extract32(insn, 31, 1) && !extract32(insn, 23, 1) &&
+                   (extract32(insn, 10, 6) == 0x15)) {
+            handle_simdshl(s, insn);
         } else {
             unallocated_encoding(s);
         }
