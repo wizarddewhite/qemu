@@ -834,6 +834,42 @@ static void handle_simdldstm(DisasContext *s, uint32_t insn, bool is_wback)
     tcg_temp_free_i64(tcg_addr);
 }
 
+static void simd_ld(TCGv_i64 tcg_reg, int freg_offs, int size)
+{
+    switch (size) {
+    case 0:
+        tcg_gen_ld8u_i64(tcg_reg, cpu_env, freg_offs);
+        break;
+    case 1:
+        tcg_gen_ld16u_i64(tcg_reg, cpu_env, freg_offs);
+        break;
+    case 2:
+        tcg_gen_ld32u_i64(tcg_reg, cpu_env, freg_offs);
+        break;
+    case 3:
+        tcg_gen_ld_i64(tcg_reg, cpu_env, freg_offs);
+        break;
+    }
+}
+
+static void simd_st(TCGv_i64 tcg_reg, int freg_offs, int size)
+{
+    switch (size) {
+    case 0:
+        tcg_gen_st8_i64(tcg_reg, cpu_env, freg_offs);
+        break;
+    case 1:
+        tcg_gen_st16_i64(tcg_reg, cpu_env, freg_offs);
+        break;
+    case 2:
+        tcg_gen_st32_i64(tcg_reg, cpu_env, freg_offs);
+        break;
+    case 3:
+        tcg_gen_st_i64(tcg_reg, cpu_env, freg_offs);
+        break;
+    }
+}
+
 static void handle_dupg(DisasContext *s, uint32_t insn)
 {
     int rd = get_bits(insn, 0, 5);
@@ -857,27 +893,8 @@ static void handle_dupg(DisasContext *s, uint32_t insn)
     }
 
     clear_fpreg(rd);
-    switch (size) {
-    case 0:
-        for (i = 0; i < (q ? 16 : 8); i++) {
-            tcg_gen_st8_i64(cpu_reg(rn), cpu_env, freg_offs_d + i);
-        }
-        break;
-    case 1:
-        for (i = 0; i < (q ? 16 : 8); i+=2) {
-            tcg_gen_st16_i64(cpu_reg(rn), cpu_env, freg_offs_d + i);
-        }
-        break;
-    case 2:
-        for (i = 0; i < (q ? 16 : 8); i+=4) {
-            tcg_gen_st32_i64(cpu_reg(rn), cpu_env, freg_offs_d + i);
-        }
-        break;
-    case 3:
-        for (i = 0; i < (q ? 16 : 8); i+=8) {
-            tcg_gen_st_i64(cpu_reg(rn), cpu_env, freg_offs_d + i);
-        }
-        break;
+    for (i = 0; i < (q ? 16 : 8); i += (1 << size)) {
+        simd_st(cpu_reg(rn), freg_offs_d + i, size);
     }
 }
 
@@ -903,24 +920,8 @@ static void handle_umov(DisasContext *s, uint32_t insn)
         unallocated_encoding(s);
     }
 
-    switch (size) {
-    case 0:
-        idx = get_bits(imm5, 1, 4) << 0;
-        tcg_gen_ld8u_i64(cpu_reg(rd), cpu_env, freg_offs_n + idx);
-        break;
-    case 1:
-        idx = get_bits(imm5, 2, 3) << 1;
-        tcg_gen_ld16u_i64(cpu_reg(rd), cpu_env, freg_offs_n + idx);
-        break;
-    case 2:
-        idx = get_bits(imm5, 3, 2) << 2;
-        tcg_gen_ld32u_i64(cpu_reg(rd), cpu_env, freg_offs_n + idx);
-        break;
-    case 3:
-        idx = get_bits(imm5, 4, 1) << 3;
-        tcg_gen_ld_i64(cpu_reg(rd), cpu_env, freg_offs_n + idx);
-        break;
-    }
+    idx = get_bits(imm5, 1 + size, 4 - size) << size;
+    simd_ld(cpu_reg(rd), freg_offs_n + idx, size);
 }
 
 static void handle_insg(DisasContext *s, uint32_t insn)
@@ -939,24 +940,8 @@ static void handle_insg(DisasContext *s, uint32_t insn)
         }
     }
 
-    switch (size) {
-    case 0:
-        idx = get_bits(imm5, 1, 4) << 0;
-        tcg_gen_st8_i64(cpu_reg(rn), cpu_env, freg_offs_d + idx);
-        break;
-    case 1:
-        idx = get_bits(imm5, 2, 3) << 1;
-        tcg_gen_st16_i64(cpu_reg(rn), cpu_env, freg_offs_d + idx);
-        break;
-    case 2:
-        idx = get_bits(imm5, 3, 2) << 2;
-        tcg_gen_st32_i64(cpu_reg(rn), cpu_env, freg_offs_d + idx);
-        break;
-    case 3:
-        idx = get_bits(imm5, 4, 1) << 3;
-        tcg_gen_st_i64(cpu_reg(rn), cpu_env, freg_offs_d + idx);
-        break;
-    }
+    idx = get_bits(imm5, 1 + size, 4 - size) << size;
+    simd_st(cpu_reg(rn), freg_offs_d + idx, size);
 }
 
 /* SIMD ORR */
