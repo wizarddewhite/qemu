@@ -959,6 +959,68 @@ static void handle_insg(DisasContext *s, uint32_t insn)
     }
 }
 
+/* SIMD ORR */
+static void handle_simdorr(DisasContext *s, uint32_t insn)
+{
+    int rd = get_bits(insn, 0, 5);
+    int rn = get_bits(insn, 5, 5);
+    int rm = get_bits(insn, 16, 5);
+    int size = get_bits(insn, 22, 2);
+    int opcode = get_bits(insn, 11, 5);
+    bool is_q = get_bits(insn, 30, 1);
+    int freg_offs_d = offsetof(CPUARMState, vfp.regs[rd * 2]);
+    int freg_offs_n = offsetof(CPUARMState, vfp.regs[rn * 2]);
+    int freg_offs_m = offsetof(CPUARMState, vfp.regs[rm * 2]);
+    TCGv_i64 tcg_op1_1 = tcg_temp_new_i64();
+    TCGv_i64 tcg_op1_2 = tcg_temp_new_i64();
+    TCGv_i64 tcg_op2_1 = tcg_temp_new_i64();
+    TCGv_i64 tcg_op2_2 = tcg_temp_new_i64();
+    TCGv_i64 tcg_res_1 = tcg_temp_new_i64();
+    TCGv_i64 tcg_res_2 = tcg_temp_new_i64();
+
+    tcg_gen_ld_i64(tcg_op1_1, cpu_env, freg_offs_n);
+    tcg_gen_ld_i64(tcg_op2_1, cpu_env, freg_offs_m);
+    if (is_q) {
+        tcg_gen_ld_i64(tcg_op1_2, cpu_env, freg_offs_n + sizeof(float64));
+        tcg_gen_ld_i64(tcg_op2_2, cpu_env, freg_offs_m + sizeof(float64));
+    } else {
+        tcg_gen_movi_i64(tcg_op1_2, 0);
+        tcg_gen_movi_i64(tcg_op2_2, 0);
+    }
+
+    switch (opcode) {
+    case 0x3: /* ORR */
+        if (size & 1) {
+            tcg_gen_not_i64(tcg_op2_1, tcg_op2_1);
+            tcg_gen_not_i64(tcg_op2_2, tcg_op2_2);
+        }
+        if (size & 2) {
+            tcg_gen_or_i64(tcg_res_1, tcg_op1_1, tcg_op2_1);
+            tcg_gen_or_i64(tcg_res_2, tcg_op1_2, tcg_op2_2);
+        } else {
+            tcg_gen_and_i64(tcg_res_1, tcg_op1_1, tcg_op2_1);
+            tcg_gen_and_i64(tcg_res_2, tcg_op1_2, tcg_op2_2);
+        }
+        break;
+    default:
+        unallocated_encoding(s);
+        return;
+    }
+
+    tcg_gen_st_i64(tcg_res_1, cpu_env, freg_offs_d);
+    if (!is_q) {
+        tcg_gen_movi_i64(tcg_res_2, 0);
+    }
+    tcg_gen_st_i64(tcg_res_2, cpu_env, freg_offs_d + sizeof(float64));
+
+    tcg_temp_free_i64(tcg_op1_1);
+    tcg_temp_free_i64(tcg_op1_2);
+    tcg_temp_free_i64(tcg_op2_1);
+    tcg_temp_free_i64(tcg_op2_2);
+    tcg_temp_free_i64(tcg_res_1);
+    tcg_temp_free_i64(tcg_res_2);
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -1027,6 +1089,10 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else if ((get_bits(insn, 29, 3) == 2) && !get_bits(insn, 21, 3) &&
             (get_bits(insn, 10, 6) == 0x7)) {
             handle_insg(s, insn);
+        } else if (!get_bits(insn, 31, 1) && !get_bits(insn, 29, 1) &&
+                   get_bits(insn, 21, 1) && get_bits(insn, 10, 1) &&
+                   (get_bits(insn, 11, 5) == 0x3)) {
+            handle_simdorr(s, insn);
         } else {
             unallocated_encoding(s);
         }
