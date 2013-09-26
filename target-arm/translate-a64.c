@@ -2115,6 +2115,76 @@ static void handle_fpdp1s32(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_tmp);
 }
 
+/* Floating-point data-processing (1 source) - 64 bit */
+static void handle_fpdp1s64(DisasContext *s, uint32_t insn)
+{
+    int rd = get_bits(insn, 0, 5);
+    int rn = get_bits(insn, 5, 5);
+    int opcode = get_bits(insn, 15, 6);
+    int freg_offs_n = offsetof(CPUARMState, vfp.regs[rn * 2]);
+    int freg_offs_d = offsetof(CPUARMState, vfp.regs[rd * 2]);
+    TCGv_i64 tcg_op = tcg_temp_new_i64();
+    TCGv_i64 tcg_res = tcg_temp_new_i64();
+    TCGv_i32 tcg_tmp32;
+    TCGv_ptr fpst = get_fpstatus_ptr();
+
+    tcg_gen_ld_i64(tcg_op, cpu_env, freg_offs_n);
+
+    switch (opcode) {
+    case 0x0: /* FMOV */
+        tcg_gen_mov_i64(tcg_res, tcg_op);
+        break;
+    case 0x1: /* FABS */
+        gen_helper_vfp_absd(tcg_res, tcg_op);
+        break;
+    case 0x2: /* FNEG */
+        gen_helper_vfp_negd(tcg_res, tcg_op);
+        break;
+    case 0x3: /* FSQRT */
+        gen_helper_vfp_sqrtd(tcg_res, tcg_op, cpu_env);
+        break;
+    case 0x4: /* FCVT (double to single) */
+        tcg_tmp32 = tcg_temp_new_i32();
+        gen_helper_vfp_fcvtsd(tcg_tmp32, tcg_op, cpu_env);
+        tcg_gen_extu_i32_i64(tcg_res, tcg_tmp32);
+        tcg_temp_free_i32(tcg_tmp32);
+        break;
+    case 0x7: /* FCVT (double to half) */
+        /* XXX */
+        unallocated_encoding(s);
+        return;
+    case 0x8: /* FRINTN XXX add rounding mode */
+    case 0x9: /* FRINTP */
+    case 0xa: /* FRINTM */
+    case 0xb: /* FRINTZ */
+    case 0xc: /* FRINTA */
+    case 0xe: /* FRINTX */
+    case 0xf: /* FRINTI */
+    {
+        TCGv_i32 tcg_rmode = tcg_const_i32(opcode & 7);
+
+        gen_helper_set_rmode(tcg_rmode, fpst);
+        gen_helper_rintd(tcg_res, tcg_op, fpst);
+
+        /* XXX use fpcr */
+        tcg_gen_movi_i32(tcg_rmode, -1);
+        gen_helper_set_rmode(tcg_rmode, fpst);
+        tcg_temp_free_i32(tcg_rmode);
+        break;
+    }
+    default:
+        unallocated_encoding(s);
+        return;
+    }
+
+    clear_fpreg(rd);
+    tcg_gen_st_i64(tcg_res, cpu_env, freg_offs_d);
+
+    tcg_temp_free_ptr(fpst);
+    tcg_temp_free_i64(tcg_op);
+    tcg_temp_free_i64(tcg_res);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2709,6 +2779,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else if (!get_bits(insn, 29, 3) && !get_bits(insn, 22, 2) &&
                    get_bits(insn, 21, 1) && (get_bits(insn, 10, 5) == 0x10)) {
             handle_fpdp1s32(s, insn);
+        } else if (!get_bits(insn, 29, 3) && (get_bits(insn, 22, 2) == 0x1) &&
+                   get_bits(insn, 21, 1) && (get_bits(insn, 10, 5) == 0x10)) {
+            handle_fpdp1s64(s, insn);
         } else {
             unallocated_encoding(s);
         }
