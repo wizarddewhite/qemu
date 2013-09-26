@@ -228,6 +228,39 @@ static void handle_br(DisasContext *s, uint32_t insn)
     s->is_jmp = DISAS_JUMP;
 }
 
+static void handle_cb(DisasContext *s, uint32_t insn)
+{
+    uint64_t addr = s->pc - 4 + (sextract32(insn, 5, 19) << 2);
+    bool is_zero = !extract32(insn, 24, 1);
+    bool is_32bit = !extract32(insn, 31, 1);
+    int dest = extract32(insn, 0, 5);
+    int no_match;
+    TCGv_i64 tcg_cmp, tcg_zero;
+
+    tcg_cmp = tcg_temp_new_i64();
+    tcg_zero = tcg_const_i64(0);
+
+    if (is_32bit) {
+        tcg_gen_ext32u_i64(tcg_cmp, cpu_reg(dest));
+    } else {
+        tcg_gen_mov_i64(tcg_cmp, cpu_reg(dest));
+    }
+
+    no_match = gen_new_label();
+    if (is_zero) {
+        tcg_gen_brcond_i64(TCG_COND_NE, tcg_cmp, tcg_zero, no_match);
+    } else {
+        tcg_gen_brcond_i64(TCG_COND_EQ, tcg_cmp, tcg_zero, no_match);
+    }
+    gen_goto_tb(s, 0, addr);
+
+    gen_set_label(no_match);
+    gen_goto_tb(s, 1, s->pc);
+
+    tcg_temp_free_i64(tcg_cmp);
+    tcg_temp_free_i64(tcg_zero);
+}
+
 static void ldst_do_vec_int(DisasContext *s, int freg_offs, TCGv_i64 tcg_addr,
                             int size, bool is_store)
 {
@@ -1702,6 +1735,15 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
     case 0x14:
         if (extract32(insn, 29, 3) == 0x6 && !extract32(insn, 2, 3)) {
             handle_svc(s, insn);
+        } else if (extract32(insn, 29, 2) == 0x1) {
+            handle_cb(s, insn);
+        } else {
+            unallocated_encoding(s);
+        }
+        break;
+    case 0x15:
+        if (extract32(insn, 29, 2) == 0x1) {
+            handle_cb(s, insn);
         } else {
             unallocated_encoding(s);
         }
