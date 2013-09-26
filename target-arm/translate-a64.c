@@ -1011,6 +1011,44 @@ static void handle_addi(DisasContext *s, uint32_t insn)
 
 }
 
+static void handle_movi(DisasContext *s, uint32_t insn)
+{
+    int reg = get_reg(insn);
+    uint64_t imm = get_bits(insn, 5, 16);
+    int is_32bit = !get_bits(insn, 31, 1);
+    int is_k = get_bits(insn, 29, 1);
+    int is_n = !get_bits(insn, 30, 1);
+    int pos = get_bits(insn, 21, 2) << 4;
+    TCGv_i64 tcg_imm;
+
+    if (get_bits(insn, 23, 1) != 1) {
+        /* reserved */
+        unallocated_encoding(s);
+        return;
+    }
+
+    if (is_k && is_n) {
+        unallocated_encoding(s);
+        return;
+    }
+
+    if (is_k) {
+        tcg_imm = tcg_const_i64(imm);
+        tcg_gen_deposit_i64(cpu_reg(reg), cpu_reg(reg), tcg_imm, pos, 16);
+        tcg_temp_free_i64(tcg_imm);
+    } else {
+        tcg_gen_movi_i64(cpu_reg(reg), imm << pos);
+    }
+
+    if (is_n) {
+        tcg_gen_not_i64(cpu_reg(reg), cpu_reg(reg));
+    }
+
+    if (is_32bit) {
+        tcg_gen_ext32u_i64(cpu_reg(reg), cpu_reg(reg));
+    }
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -1438,6 +1476,13 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         break;
     case 0x11:
         handle_addi(s, insn);
+        break;
+    case 0x12:
+        if (get_bits(insn, 23, 1)) {
+            handle_movi(s, insn);
+        } else {
+            unallocated_encoding(s);
+        }
         break;
     default:
         unallocated_encoding(s);
