@@ -146,3 +146,44 @@ uint64_t HELPER(sign_extend)(uint64_t x, uint64_t is_signed, uint64_t mask)
 
     return x;
 }
+
+uint32_t HELPER(cond)(uint32_t pstate, uint32_t cond)
+{
+    uint32_t r;
+
+    switch (cond >> 1) {
+    case 0:
+        r = pstate & PSTATE_Z;
+        break;
+    case 1:
+        r = pstate & PSTATE_C;
+        break;
+    case 2:
+        r = pstate & PSTATE_N;
+        break;
+    case 3:
+        r = pstate & PSTATE_V;
+        break;
+    case 4:
+        r = (pstate & PSTATE_C) && !(pstate & PSTATE_Z);
+        break;
+    case 5:
+        r = (((pstate & PSTATE_N) ? 1 : 0) == ((pstate & PSTATE_V) ? 1 : 0));
+        break;
+    case 6:
+        r = (((pstate & PSTATE_N) ? 1 : 0) == ((pstate & PSTATE_V) ? 1 : 0))
+               && !(pstate & PSTATE_Z);
+        break;
+    case 7:
+    default:
+        /* ALWAYS */
+        r = 1;
+        break;
+    }
+
+    if ((cond & 1) && (cond != 0xf)) {
+        r = !r;
+    }
+
+    return !!r;
+}
