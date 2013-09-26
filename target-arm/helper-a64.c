@@ -251,3 +251,8 @@ uint64_t HELPER(rbit64)(uint64_t x)
        | ((x & 0x1111111111111111ULL) << 3);
     return x;
 }
+
+uint64_t HELPER(clz64)(uint64_t x)
+{
+    return clz64(x);
+}
