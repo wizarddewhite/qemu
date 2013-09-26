@@ -1681,6 +1681,31 @@ static void handle_mrs(DisasContext *s, uint32_t insn)
     }
 }
 
+static void handle_msr(DisasContext *s, uint32_t insn)
+{
+    int dest = get_reg(insn);
+    int op2 = get_bits(insn, 5, 3);
+    int crm = get_bits(insn, 8, 4);
+    int crn = get_bits(insn, 12, 4);
+    int op1 = get_bits(insn, 16, 3);
+    int op0 = get_bits(insn, 19, 2);
+
+    /* XXX handle properly */
+    if (op0 == 3 && op1 == 3 && op2 == 2 && !crm && crn == 13) {
+        tcg_gen_st_i64(cpu_reg(dest), cpu_env,
+                       offsetof(CPUARMState, sr.tpidr_el0));
+    } else if (op0 == 3 && op1 == 3 && (op2 == 0 || op2 == 1) &&
+               crm == 4 && crn == 4) {
+        /* XXX this is probably wrong! */
+        tcg_gen_st32_i64(cpu_reg(dest), cpu_env,
+            offsetof(CPUARMState, vfp.xregs[ARM_VFP_FPSCR]));
+    } else {
+        qemu_log_mask(LOG_UNIMP, "MSR: %d %d %d %d %d\n", op0, op1, op2, crm,
+                      crn);
+        unallocated_encoding(s);
+    }
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -1811,6 +1836,8 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             handle_cb(s, insn);
         } else if (get_bits(insn, 20, 12) == 0xd53) {
             handle_mrs(s, insn);
+        } else if (get_bits(insn, 20, 12) == 0xd51) {
+            handle_msr(s, insn);
         } else {
             unallocated_encoding(s);
         }
