@@ -1830,6 +1830,8 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             handle_mrs(s, insn);
         } else if (extract32(insn, 20, 12) == 0xd51) {
             handle_msr(s, insn);
+        } else if ((insn & 0xfffff01f) == 0xd503201f) {
+            /* HINT instructions, do nothing */
         } else {
             unallocated_encoding(s);
         }
