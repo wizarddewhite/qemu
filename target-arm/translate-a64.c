@@ -1917,6 +1917,64 @@ static void handle_fmovi(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_res);
 }
 
+/* floating <-> integer conversion */
+static void handle_fpintconv(DisasContext *s, uint32_t insn)
+{
+    int rd = get_reg(insn);
+    int rn = get_bits(insn, 5, 5);
+    int opcode = get_bits(insn, 16, 3);
+    int rmode = get_bits(insn, 19, 2);
+    int type = get_bits(insn, 22, 2);
+    bool is_s = get_bits(insn, 29, 1);
+    bool is_32bit = !get_bits(insn, 31, 1);
+
+    if (!is_s && (rmode < 2) && (opcode > 5)) {
+        /* FMOV */
+        bool itof = opcode & 1;
+        int dest = itof ? rd : rn;
+        int freg_offs = offsetof(CPUARMState, vfp.regs[dest * 2]);
+
+        if (rmode & 1) {
+            freg_offs += sizeof(float64);
+        }
+
+        if (itof && (!(rmode & 1))) {
+            clear_fpreg(dest);
+        }
+
+        switch (type |
+                ((rmode & 1) ? 0x4 : 0) |
+                (itof ? 0x8 : 0)) {
+        case 0x0:
+            tcg_gen_ld32u_i64(cpu_reg(rd), cpu_env, freg_offs);
+            break;
+        case 0x1:
+        case 0x2 | 0x4:
+            tcg_gen_ld_i64(cpu_reg(rd), cpu_env, freg_offs);
+            break;
+        case 0x8 | 0x0:
+            tcg_gen_st32_i64(cpu_reg(rn), cpu_env, freg_offs);
+            break;
+        case 0x8 | 0x1:
+        case 0x8 | 0x2 | 0x4:
+            tcg_gen_st_i64(cpu_reg(rn), cpu_env, freg_offs);
+            break;
+        default:
+            unallocated_encoding(s);
+        }
+
+        if (is_32bit && !itof) {
+            tcg_gen_ext32u_i64(cpu_reg(rd), cpu_reg(rd));
+        }
+    } else if (!is_s && ((opcode & 0x6) < 5)) {
+        /* [S|U]CVTF and FCVT[N|P|M|Z][S|U] */
+        handle_fpfpcvt(s, insn, !(opcode & 0x6), rmode);
+    } else {
+        /* XXX */
+        unallocated_encoding(s);
+    }
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2502,6 +2560,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else if (!get_bits(insn, 29, 3) && get_bits(insn, 21, 1) &&
                    (get_bits(insn, 5, 8) == 0x80)) {
             handle_fmovi(s, insn);
+        } else if (get_bits(insn, 21, 1) && !get_bits(insn, 30, 1) &&
+                   !get_bits(insn, 10, 6)) {
+            handle_fpintconv(s, insn);
         } else {
             unallocated_encoding(s);
         }
