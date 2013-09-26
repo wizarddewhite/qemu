@@ -1698,6 +1698,14 @@ static void handle_msr(DisasContext *s, uint32_t insn)
     }
 }
 
+static void handle_sys(DisasContext *s, uint32_t insn)
+{
+    /*
+     * XXX Simply ignore sys for now. We only need to start worrying about it
+     *     when we start implementing system emulation.
+     */
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -1834,6 +1842,8 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             /* HINT instructions, do nothing */
         } else if ((insn & 0xfffff09f) == 0xd503309f) {
             /* barrier instructions, do nothing */
+        } else if (extract32(insn, 19, 13) == 0x1aa1) {
+            handle_sys(s, insn);
         } else {
             unallocated_encoding(s);
         }
