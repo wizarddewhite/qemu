@@ -2201,6 +2201,8 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             handle_rev(s, insn);
         } else if ((insn & 0x7ffff800) == 0x5ac01000) {
             handle_clz(s, insn);
+        } else if (!get_bits(insn, 21, 3) && !get_bits(insn, 10, 6)) {
+            handle_add(s, insn);
         } else {
             unallocated_encoding(s);
         }
