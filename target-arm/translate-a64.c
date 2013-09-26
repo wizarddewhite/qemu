@@ -1975,6 +1975,69 @@ static void handle_fpintconv(DisasContext *s, uint32_t insn)
     }
 }
 
+/* Floating-point compare */
+static void handle_fcmp(DisasContext *s, uint32_t insn)
+{
+    int opc = get_bits(insn, 3, 2);
+    int rn = get_bits(insn, 5, 5);
+    int rm = get_bits(insn, 16, 5);
+    bool is_32bit = !get_bits(insn, 22, 1);
+    bool is_cmp_with_zero = get_bits(opc, 0, 1);
+    int freg_offs_n = offsetof(CPUARMState, vfp.regs[rn * 2]);
+    int freg_offs_m = offsetof(CPUARMState, vfp.regs[rm * 2]);
+    TCGv_i32 tcg_op1_32 = tcg_temp_new_i32();
+    TCGv_i32 tcg_op1_64 = tcg_temp_new_i64();
+    TCGv_i32 tcg_op2_32;
+    TCGv_i32 tcg_op2_64;
+
+    if (get_bits(insn, 23, 1)) {
+        unallocated_encoding(s);
+    }
+
+    tcg_gen_ld_i64(tcg_op1_64, cpu_env, freg_offs_n);
+
+    if (is_32bit) {
+        tcg_gen_trunc_i64_i32(tcg_op1_32, tcg_op1_64);
+    }
+
+    if (is_cmp_with_zero) {
+        tcg_op2_32 = tcg_const_i32(0);
+        tcg_op2_64 = tcg_const_i64(0);
+    } else {
+        tcg_op2_32 = tcg_temp_new_i32();
+        tcg_op2_64 = tcg_temp_new_i64();
+
+        tcg_gen_ld_i64(tcg_op2_64, cpu_env, freg_offs_m);
+        if (is_32bit) {
+            tcg_gen_trunc_i64_i32(tcg_op2_32, tcg_op2_64);
+        }
+    }
+
+    switch (opc | (is_32bit ? 0x0 : 0x4)) {
+    case 0x0: /* FCMP single, 32bit */
+    case 0x1: /* FCMPZ single, 32bit */
+        gen_helper_vfp_cmps(pstate, tcg_op1_32, tcg_op2_32, cpu_env);
+        break;
+    case 0x2: /* FCMPE single, 32bit */
+    case 0x3: /* FCMPEZ single, 32bit */
+        gen_helper_vfp_cmpes(pstate, tcg_op1_32, tcg_op2_32, cpu_env);
+        break;
+    case 0x4: /* FCMP double, 64bit */
+    case 0x5: /* FCMPZ double, 64bit */
+        gen_helper_vfp_cmpd(pstate, tcg_op1_64, tcg_op2_64, cpu_env);
+        break;
+    case 0x6: /* FCMPE double, 64bit */
+    case 0x7: /* FCMPEZ double, 64bit */
+        gen_helper_vfp_cmped(pstate, tcg_op1_64, tcg_op2_64, cpu_env);
+        break;
+    }
+
+    tcg_temp_free_i64(tcg_op1_64);
+    tcg_temp_free_i64(tcg_op2_64);
+    tcg_temp_free_i32(tcg_op1_32);
+    tcg_temp_free_i32(tcg_op2_32);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2563,6 +2626,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else if (get_bits(insn, 21, 1) && !get_bits(insn, 30, 1) &&
                    !get_bits(insn, 10, 6)) {
             handle_fpintconv(s, insn);
+        } else if (!get_bits(insn, 29, 3) && get_bits(insn, 21, 1) &&
+                   (get_bits(insn, 10, 6) == 0x8) && !get_bits(insn, 0, 3)) {
+            handle_fcmp(s, insn);
         } else {
             unallocated_encoding(s);
         }
