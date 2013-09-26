@@ -1579,6 +1579,12 @@ static void handle_simdshl(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_tmp);
 }
 
+static void handle_svc(DisasContext *s, uint32_t insn)
+{
+    gen_a64_set_pc_im(s->pc);
+    s->is_jmp = DISAS_SWI;
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -1691,6 +1697,13 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             handle_extr(s, insn);
         } else {
             handle_bfm(s, insn);
+        }
+        break;
+    case 0x14:
+        if (extract32(insn, 29, 3) == 0x6 && !extract32(insn, 2, 3)) {
+            handle_svc(s, insn);
+        } else {
+            unallocated_encoding(s);
         }
         break;
     default:
