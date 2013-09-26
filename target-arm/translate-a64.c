@@ -1462,6 +1462,42 @@ static void handle_ldst(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_addr);
 }
 
+static void handle_ld_literal(DisasContext *s, uint32_t insn)
+{
+    int dest = get_reg(insn);
+    int64_t imm = get_sbits(insn, 5, 19) << 2;
+    bool is_vector = get_bits(insn, 26, 1);
+    int opc = get_bits(insn, 30, 2);
+    TCGv_i64 tcg_addr;
+    bool is_signed;
+    int size;
+
+    tcg_addr = tcg_const_i64((s->pc - 4) + imm);
+
+    switch (opc) {
+    case 0:
+        is_signed = false;
+        size = 2;
+        break;
+    case 1:
+        is_signed = false;
+        size = 3;
+        break;
+    case 2:
+        is_signed = true;
+        size = 2;
+        break;
+    case 3:
+        /* prefetch */
+        goto out;
+    }
+
+    ldst_do(s, dest, tcg_addr, size, false, is_signed, is_vector);
+
+out:
+    tcg_temp_free_i64(tcg_addr);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2018,7 +2054,7 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         if (get_bits(insn, 29, 1)) {
             handle_ldst(s, insn);
         } else {
-            unallocated_encoding(s);
+            handle_ld_literal(s, insn);
         }
         break;
     default:
