@@ -55,11 +55,6 @@ static uint32_t gen_opc_condexec_bits[OPC_BUF_SIZE];
 #define IS_USER(s) (s->user)
 #endif
 
-/* These instructions trap after executing, so defer them until after the
-   conditional execution state has been updated.  */
-#define DISAS_WFI 4
-#define DISAS_SWI 5
-
 TCGv_ptr cpu_env;
 /* We reuse the same 64-bit temporaries for efficiency.  */
 static TCGv_i64 cpu_V0, cpu_V1, cpu_M0;
