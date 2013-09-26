@@ -1139,6 +1139,33 @@ static void handle_orri(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_op2);
 }
 
+static void handle_extr(DisasContext *s, uint32_t insn)
+{
+    int rd = extract32(insn, 0, 5);
+    int rn = extract32(insn, 5, 5);
+    int imms = extract32(insn, 10, 6);
+    int rm = extract32(insn, 16, 5);
+    bool is_32bit = !extract32(insn, 31, 1);
+    int bitsize = is_32bit ? 32 : 64;
+    TCGv_i64 tcg_res = tcg_temp_new_i64();
+    TCGv_i64 tcg_tmp = tcg_temp_new_i64();
+
+    if (is_32bit) {
+        tcg_gen_ext32u_i64(tcg_tmp, cpu_reg(rm));
+    } else {
+        tcg_gen_mov_i64(tcg_tmp, cpu_reg(rm));
+    }
+    tcg_gen_shri_i64(tcg_res, cpu_reg(rm), imms);
+    tcg_gen_shli_i64(tcg_tmp, cpu_reg(rn), bitsize - imms);
+    tcg_gen_or_i64(cpu_reg(rd), tcg_tmp, tcg_res);
+    if (is_32bit) {
+        tcg_gen_ext32u_i64(cpu_reg(rd), cpu_reg(rd));
+    }
+
+    tcg_temp_free_i64(tcg_tmp);
+    tcg_temp_free_i64(tcg_res);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -1572,6 +1599,14 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             handle_movi(s, insn);
         } else {
             handle_orri(s, insn);
+        }
+        break;
+    case 0x13:
+        if (extract32(insn, 23, 1) && !extract32(insn, 21, 1) &&
+            !extract32(insn, 29, 2)) {
+            handle_extr(s, insn);
+        } else {
+            unallocated_encoding(s);
         }
         break;
     default:
