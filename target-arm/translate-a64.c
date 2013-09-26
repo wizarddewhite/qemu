@@ -1549,6 +1549,24 @@ static void handle_div(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(m);
 }
 
+static void handle_shift_reg(DisasContext *s, uint32_t insn)
+{
+    int rd = get_reg(insn);
+    int rn = get_bits(insn, 5, 5);
+    int shift_type  = get_bits(insn, 10, 2);
+    int rm = get_bits(insn, 16, 5);
+    bool is_32bit = !get_bits(insn, 31, 1);
+    TCGv_i64 tcg_shift;
+    TCGv_i64 tcg_shifted;
+
+    tcg_shift = tcg_temp_new_i64();
+    tcg_gen_andi_i64(tcg_shift, cpu_reg(rm), is_32bit ? 31 : 63);
+    tcg_shifted = get_shift(rn, shift_type, tcg_shift, is_32bit);
+    tcg_gen_mov_i64(cpu_reg(rd), tcg_shifted);
+    tcg_temp_free_i64(tcg_shift);
+    tcg_temp_free_i64(tcg_shifted);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2113,6 +2131,8 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             handle_cinc(s, insn);
         } else if ((insn & 0x7fe0f800) == 0x1ac00800) {
             handle_div(s, insn);
+        } else if ((insn & 0x7fe0f000) == 0x1ac02000) {
+            handle_shift_reg(s, insn);
         } else {
             unallocated_encoding(s);
         }
