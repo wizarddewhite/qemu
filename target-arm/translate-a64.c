@@ -1006,6 +1006,56 @@ static void handle_simdorr(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_res_2);
 }
 
+/* AdvSIMD scalar three same (U=0) */
+static void handle_simd3su0(DisasContext *s, uint32_t insn)
+{
+    int rd = get_bits(insn, 0, 5);
+    int rn = get_bits(insn, 5, 5);
+    int opcode = get_bits(insn, 11, 5);
+    int rm = get_bits(insn, 16, 5);
+    int size = get_bits(insn, 22, 2);
+    bool is_sub = get_bits(insn, 29, 1);
+    bool is_q = get_bits(insn, 30, 1);
+    int freg_offs_d = offsetof(CPUARMState, vfp.regs[rd * 2]);
+    int freg_offs_n = offsetof(CPUARMState, vfp.regs[rn * 2]);
+    int freg_offs_m = offsetof(CPUARMState, vfp.regs[rm * 2]);
+    TCGv_i64 tcg_op1 = tcg_temp_new_i64();
+    TCGv_i64 tcg_op2 = tcg_temp_new_i64();
+    TCGv_i64 tcg_res = tcg_temp_new_i64();
+    int ebytes = (1 << size);
+    int i;
+
+    for (i = 0; i < 16; i += ebytes) {
+        simd_ld(tcg_op1, freg_offs_n + i, size);
+        simd_ld(tcg_op2, freg_offs_m + i, size);
+
+        switch (opcode) {
+        case 0x10: /* ADD / SUB */
+            if (is_sub) {
+                tcg_gen_sub_i64(tcg_res, tcg_op1, tcg_op2);
+            } else {
+                tcg_gen_add_i64(tcg_res, tcg_op1, tcg_op2);
+            }
+            break;
+        default:
+            unallocated_encoding(s);
+            return;
+        }
+
+        simd_st(tcg_res, freg_offs_d + i, size);
+    }
+
+    if (!is_q) {
+        TCGv_i64 tcg_zero = tcg_const_i64(0);
+        simd_st(tcg_zero, freg_offs_d + sizeof(float64), 3);
+        tcg_temp_free_i64(tcg_zero);
+    }
+
+    tcg_temp_free_i64(tcg_op1);
+    tcg_temp_free_i64(tcg_op2);
+    tcg_temp_free_i64(tcg_res);
+}
+
 void disas_a64_insn(CPUARMState *env, DisasContext *s)
 {
     uint32_t insn;
@@ -1078,6 +1128,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
                    get_bits(insn, 21, 1) && get_bits(insn, 10, 1) &&
                    (get_bits(insn, 11, 5) == 0x3)) {
             handle_simdorr(s, insn);
+        } else if (!get_bits(insn, 31, 1) && get_bits(insn, 21, 1) &&
+                   get_bits(insn, 10, 1)) {
+            handle_simd3su0(s, insn);
         } else {
             unallocated_encoding(s);
         }
