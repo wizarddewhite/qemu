@@ -285,6 +285,36 @@ static void handle_condb(DisasContext *s, uint32_t insn)
     tcg_temp_free_i32(tcg_condmatch);
 }
 
+static void handle_tbz(DisasContext *s, uint32_t insn)
+{
+    uint64_t addr = s->pc - 4 + (sextract32(insn, 5, 14) << 2);
+    bool is_one = extract32(insn, 24, 1);
+    int shift = extract32(insn, 19, 5) | (extract32(insn, 31, 1) << 5);
+    int source = extract32(insn, 0, 5);
+    int no_match;
+    uint64_t mask = 1ULL << shift;
+    TCGv_i64 tcg_cmp, tcg_mask;
+
+    tcg_cmp = tcg_temp_new_i64();
+    tcg_mask = tcg_const_i64(mask);
+    tcg_gen_and_i64(tcg_cmp, cpu_reg(source), tcg_mask);
+
+    no_match = gen_new_label();
+    if (is_one) {
+        tcg_gen_brcond_i64(TCG_COND_NE, tcg_cmp, tcg_mask, no_match);
+    } else {
+        tcg_gen_brcond_i64(TCG_COND_EQ, tcg_cmp, tcg_mask, no_match);
+    }
+    gen_goto_tb(s, 0, addr);
+    tcg_gen_exit_tb(0);
+
+    gen_set_label(no_match);
+    gen_goto_tb(s, 1, s->pc);
+
+    tcg_temp_free_i64(tcg_cmp);
+    tcg_temp_free_i64(tcg_mask);
+}
+
 static void ldst_do_vec_int(DisasContext *s, int freg_offs, TCGv_i64 tcg_addr,
                             int size, bool is_store)
 {
@@ -1844,6 +1874,14 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             /* barrier instructions, do nothing */
         } else if (extract32(insn, 19, 13) == 0x1aa1) {
             handle_sys(s, insn);
+        } else {
+            unallocated_encoding(s);
+        }
+        break;
+    case 0x16:
+    case 0x17:
+        if (extract32(insn, 29, 2) == 0x1) {
+            handle_tbz(s, insn);
         } else {
             unallocated_encoding(s);
         }
