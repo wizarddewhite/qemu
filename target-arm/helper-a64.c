@@ -137,3 +137,12 @@ uint32_t HELPER(pstate_sub32)(uint32_t pstate, uint64_t x1, uint64_t x2,
 
     return pstate;
 }
+
+uint64_t HELPER(sign_extend)(uint64_t x, uint64_t is_signed, uint64_t mask)
+{
+    if (x & is_signed) {
+        x |= mask;
+    }
+
+    return x;
+}
