@@ -268,6 +268,32 @@ static void handle_cb(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_zero);
 }
 
+static void handle_condb(DisasContext *s, uint32_t insn)
+{
+    uint64_t addr = s->pc - 4 + (get_sbits(insn, 5, 19) << 2);
+    int cond = get_bits(insn, 0, 4);
+    int no_match;
+    TCGv_i32 tcg_zero = tcg_const_i32(0);
+    TCGv_i32 tcg_cond = tcg_const_i32(cond);
+    TCGv_i32 tcg_condmatch = tcg_temp_new_i32();
+
+    no_match = gen_new_label();
+
+    gen_helper_cond(tcg_condmatch, pstate, tcg_cond);
+    tcg_gen_brcond_i32(TCG_COND_EQ, tcg_condmatch, tcg_zero, no_match);
+
+    gen_goto_tb(s, 0, addr);
+
+    gen_set_label(no_match);
+    gen_goto_tb(s, 1, s->pc);
+
+    tcg_temp_free_i32(tcg_zero);
+    tcg_temp_free_i32(tcg_cond);
+    tcg_temp_free_i32(tcg_condmatch);
+
+    s->is_jmp = DISAS_TB_JUMP;
+}
+
 static void ldst_do_vec_int(DisasContext *s, int freg_offs, TCGv_i64 tcg_addr,
                             int size, bool is_store)
 {
@@ -1744,6 +1770,8 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
             handle_svc(s, insn);
         } else if (get_bits(insn, 29, 2) == 0x1) {
             handle_cb(s, insn);
+        } else if (get_bits(insn, 29, 3) == 0x2) {
+            handle_condb(s, insn);
         } else {
             unallocated_encoding(s);
         }
