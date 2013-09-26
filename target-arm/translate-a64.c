@@ -1348,6 +1348,120 @@ static void handle_bfm(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_newmask);
 }
 
+static void ldst_calc_index(DisasContext *s, TCGv_i64 tcg_addr,
+                            bool is_reg_offset, int offset, int size)
+{
+    bool is_shift = get_bits(offset, 0, 1);
+    int option = get_bits(offset, 1, 3);
+    int rn = get_bits(offset, 4, 5);
+    int shift = size;
+    TCGv_i64 tcg_offset;
+
+    if (!is_reg_offset) {
+        tcg_offset = tcg_const_i64(offset);
+        goto add_offset;
+    }
+
+    /* offset in register */
+    if (!(option & 2)) {
+        unallocated_encoding(s);
+        return;
+    }
+
+    if (!is_shift) {
+        shift = 0;
+    }
+
+    tcg_offset = tcg_temp_new_i64();
+    reg_extend(tcg_offset, option, shift, rn);
+
+add_offset:
+    tcg_gen_add_i64(tcg_addr, tcg_addr, tcg_offset);
+    tcg_temp_free_i64(tcg_offset);
+}
+
+static void handle_ldst(DisasContext *s, uint32_t insn)
+{
+    int dest = get_reg(insn);
+    int source = get_bits(insn, 5, 5);
+    bool wback = get_bits(insn, 10, 1);
+    int type = get_bits(insn, 10, 2);
+    bool is_reg_offset = get_bits(insn, 21, 1);
+    bool is_store = !get_bits(insn, 22, 1);
+    bool opc1 = get_bits(insn, 23, 1);
+    bool is_imm12 = get_bits(insn, 24, 1);
+    bool is_vector = get_bits(insn, 26, 1);
+    int size = get_bits(insn, 30, 2);
+    bool is_signed = false;
+    bool postindex = false;
+    TCGv_i64 tcg_addr;
+    int offset;
+
+    if (is_imm12) {
+        /* wback, postindex and reg_offset bits are inside imm12 */
+        postindex = false;
+        wback = false;
+        is_reg_offset = false;
+    } else {
+        /* These only apply to the IMM9 variant */
+        if (is_reg_offset && type != 2) {
+            unallocated_encoding(s);
+            return;
+        }
+        /* LDR (post-index) */
+        postindex = (type == 1);
+    }
+
+    if (is_vector) {
+        size = (opc1 ? 0x4 : 0) | size;
+        if (size > 4) {
+            unallocated_encoding(s);
+            return;
+        }
+    } else if (opc1) {
+        if (size == 3) {
+            /* prefetch */
+            if (!is_store) {
+                unallocated_encoding(s);
+            }
+            return;
+        }
+        if (size == 2 && !is_store) {
+            unallocated_encoding(s);
+        }
+        is_store = false;
+        is_signed = true;
+    }
+
+    if (is_imm12) {
+        /* UIMM12 version */
+        offset = get_bits(insn, 10, 12) << size;
+    } else {
+        /* SIMM9 version */
+        offset = get_sbits(insn, 12, 9);
+    }
+
+    tcg_addr = tcg_temp_new_i64();
+
+    tcg_gen_mov_i64(tcg_addr, cpu_reg_sp(source));
+
+    if (!postindex) {
+        ldst_calc_index(s, tcg_addr, is_reg_offset, offset, size);
+    }
+
+    ldst_do(s, dest, tcg_addr, size, is_store, is_signed, is_vector);
+
+    if (postindex) {
+        ldst_calc_index(s, tcg_addr, is_reg_offset, offset, size);
+    }
+
+    if (wback) {
+        tcg_gen_mov_i64(cpu_reg_sp(source), tcg_addr);
+    }
+
+    tcg_temp_free_i64(tcg_addr);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -1893,6 +2007,16 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
     case 0x17:
         if (get_bits(insn, 29, 2) == 0x1) {
             handle_tbz(s, insn);
+        } else {
+            unallocated_encoding(s);
+        }
+        break;
+    case 0x18:
+    case 0x19:
+    case 0x1c:
+    case 0x1d:
+        if (get_bits(insn, 29, 1)) {
+            handle_ldst(s, insn);
         } else {
             unallocated_encoding(s);
         }
