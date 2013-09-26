@@ -1874,6 +1874,39 @@ static void handle_fpfpconv(DisasContext *s, uint32_t insn)
     handle_fpfpcvt(s, insn, direction, ROUND_MODE_ZERO);
 }
 
+/* fmov (immediate) */
+static void handle_fmovi(DisasContext *s, uint32_t insn)
+{
+    int rd = extract32(insn, 0, 5);
+    int imm8 = extract32(insn, 13, 8);
+    int is_double = extract32(insn, 22, 2);
+    uint64_t imm;
+    int freg_offs_d = offsetof(CPUARMState, vfp.regs[rd * 2]);
+    TCGv_i64 tcg_res;
+
+    if (is_double > 1) {
+        unallocated_encoding(s);
+        return;
+    }
+
+    if (is_double) {
+        imm = (extract32(imm8, 7, 1) ? 0x8000 : 0) |
+              (extract32(imm8, 6, 1) ? 0x3fc0 : 0x4000) |
+              extract32(imm8, 0, 6);
+        imm <<= 48;
+    } else {
+        imm = (extract32(imm8, 7, 1) ? 0x8000 : 0) |
+              (extract32(imm8, 6, 1) ? 0x3e00 : 0x4000) |
+              (extract32(imm8, 0, 6) << 3);
+        imm <<= 16;
+    }
+
+    tcg_res = tcg_const_i64(imm);
+    clear_fpreg(rd);
+    tcg_gen_st_i64(tcg_res, cpu_env, freg_offs_d);
+    tcg_temp_free_i64(tcg_res);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2456,6 +2489,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
     case 0x1e:
         if (!extract32(insn, 21, 1) && !extract32(insn, 30, 1)) {
             handle_fpfpconv(s, insn);
+        } else if (!extract32(insn, 29, 3) && extract32(insn, 21, 1) &&
+                   (extract32(insn, 5, 8) == 0x80)) {
+            handle_fmovi(s, insn);
         } else {
             unallocated_encoding(s);
         }
