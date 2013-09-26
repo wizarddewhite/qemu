@@ -1621,6 +1621,93 @@ static void handle_clz(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_val);
 }
 
+static void handle_mulh(DisasContext *s, uint32_t insn)
+{
+    int rd = extract32(insn, 0, 5);
+    int rn = extract32(insn, 5, 5);
+    int rm = extract32(insn, 16, 5);
+    bool is_signed = !extract32(insn, 23, 1);
+
+    if (is_signed) {
+        gen_helper_smulh(cpu_reg(rd), cpu_reg(rn), cpu_reg(rm));
+    } else {
+        gen_helper_umulh(cpu_reg(rd), cpu_reg(rn), cpu_reg(rm));
+    }
+}
+
+/* Data-processing (3 source) */
+static void handle_dp3s(DisasContext *s, uint32_t insn)
+{
+    int rd = extract32(insn, 0, 5);
+    int rn = extract32(insn, 5, 5);
+    int ra = extract32(insn, 10, 5);
+    int rm = extract32(insn, 16, 5);
+    int op_id = (extract32(insn, 29, 3) << 4) |
+                (extract32(insn, 21, 3) << 1) |
+                extract32(insn, 15, 1);
+    bool is_32bit = !(op_id & 0x40);
+    bool is_sub = op_id & 0x1;
+    bool is_signed = (op_id >= 0x42) && (op_id <= 0x44);
+    bool is_high = op_id & 0x4;
+    TCGv_i64 tcg_op1;
+    TCGv_i64 tcg_op2;
+    TCGv_i64 tcg_tmp;
+
+    switch (op_id) {
+    case 0x0: /* MADD (32bit) */
+    case 0x1: /* MSUB (32bit) */
+    case 0x40: /* MADD (64bit) */
+    case 0x41: /* MSUB (64bit) */
+    case 0x42: /* SMADDL */
+    case 0x43: /* SMSUBL */
+    case 0x44: /* SMULH */
+    case 0x4a: /* UMADDL */
+    case 0x4b: /* UMSUBL */
+    case 0x4c: /* UMULH */
+        break;
+    default:
+        unallocated_encoding(s);
+    }
+
+    if (is_high) {
+        handle_mulh(s, insn);
+        return;
+    }
+
+    tcg_op1 = tcg_temp_new_i64();
+    tcg_op2 = tcg_temp_new_i64();
+    tcg_tmp = tcg_temp_new_i64();
+
+    if (op_id < 0x42) {
+        tcg_gen_mov_i64(tcg_op1, cpu_reg(rn));
+        tcg_gen_mov_i64(tcg_op2, cpu_reg(rm));
+    } else {
+        if (is_signed) {
+            tcg_gen_ext32s_i64(tcg_op1, cpu_reg(rn));
+            tcg_gen_ext32s_i64(tcg_op2, cpu_reg(rm));
+        } else {
+            tcg_gen_ext32u_i64(tcg_op1, cpu_reg(rn));
+            tcg_gen_ext32u_i64(tcg_op2, cpu_reg(rm));
+        }
+    }
+
+    tcg_gen_mul_i64(tcg_tmp, tcg_op1, tcg_op2);
+
+    if (is_sub) {
+        tcg_gen_sub_i64(cpu_reg(rd), cpu_reg(ra), tcg_tmp);
+    } else {
+        tcg_gen_add_i64(cpu_reg(rd), cpu_reg(ra), tcg_tmp);
+    }
+
+    if (is_32bit) {
+        tcg_gen_ext32u_i64(cpu_reg(rd), cpu_reg(rd));
+    }
+
+    tcg_temp_free_i64(tcg_op1);
+    tcg_temp_free_i64(tcg_op2);
+    tcg_temp_free_i64(tcg_tmp);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2196,6 +2283,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else {
             unallocated_encoding(s);
         }
+        break;
+    case 0x1b:
+        handle_dp3s(s, insn);
         break;
     default:
         unallocated_encoding(s);
