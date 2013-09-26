@@ -183,6 +183,17 @@ static void clear_fpreg(int dest)
     tcg_gen_st_i64(tcg_zero, cpu_env, freg_offs + sizeof(float64));
 }
 
+static TCGv_ptr get_fpstatus_ptr(void)
+{
+    TCGv_ptr statusptr = tcg_temp_new_ptr();
+    int offset;
+
+    offset = offsetof(CPUARMState, vfp.standard_fp_status);
+    tcg_gen_addi_ptr(statusptr, cpu_env, offset);
+
+    return statusptr;
+}
+
 static inline void gen_goto_tb(DisasContext *s, int n, uint64_t dest)
 {
     TranslationBlock *tb;
@@ -1718,6 +1729,161 @@ static void handle_dp3s(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_tmp);
 }
 
+static void handle_fpfpcvt(DisasContext *s, uint32_t insn, bool direction,
+                           int rmode)
+{
+    int rd = get_reg(insn);
+    int rn = get_bits(insn, 5, 5);
+    int scale = get_bits(insn, 10, 6);
+    int opcode = get_bits(insn, 16, 3);
+    int type = get_bits(insn, 22, 2);
+    bool is_32bit = !get_bits(insn, 31, 1);
+    bool is_double = get_bits(type, 0, 1);
+    bool is_signed = !get_bits(opcode, 0, 1);
+    int freg_offs;
+    int fp_reg;
+    TCGv_i64 tcg_int;
+    TCGv_i64 tcg_single;
+    TCGv_i64 tcg_double;
+    TCGv_i64 tcg_fpstatus = get_fpstatus_ptr();
+    TCGv_i32 tcg_shift = tcg_const_i32(scale);
+    TCGv_i32 tcg_rmode = tcg_const_i32(rmode);
+    TCGv_i64 tcg_tmp;
+
+    if (direction) {
+        fp_reg = rn;
+        tcg_int = cpu_reg(rd);
+    } else {
+        fp_reg = rd;
+        tcg_int = cpu_reg(rn);
+    }
+    freg_offs = offsetof(CPUARMState, vfp.regs[fp_reg * 2]);
+
+    if (!direction) {
+        clear_fpreg(fp_reg);
+    }
+
+    if (is_32bit && !direction) {
+        tcg_tmp = tcg_temp_new_i64();
+        if (is_signed) {
+            tcg_gen_ext32s_i64(tcg_tmp, tcg_int);
+        } else {
+            tcg_gen_ext32u_i64(tcg_tmp, tcg_int);
+        }
+        tcg_int = tcg_tmp;
+    }
+
+    gen_helper_set_rmode(tcg_rmode, tcg_fpstatus);
+
+    switch ((direction ? 0x10 : 0)|
+            (is_double ? 0x1 : 0) |
+            (is_signed ? 0x2 : 0)) {
+    case 0x0: /* unsigned scalar->single */
+        tcg_single = tcg_temp_new_i32();
+        tcg_tmp = tcg_temp_new_i64();
+        gen_helper_vfp_uqtos(tcg_single, tcg_int, tcg_shift, tcg_fpstatus);
+        tcg_gen_extu_i32_i64(tcg_tmp, tcg_single);
+        tcg_gen_st32_i64(tcg_tmp, cpu_env, freg_offs);
+        tcg_temp_free_i32(tcg_single);
+        tcg_temp_free_i64(tcg_tmp);
+        break;
+    case 0x1: /* unsigned scalar->double */
+        tcg_double = tcg_temp_new_i64();
+        gen_helper_vfp_uqtod(tcg_double, tcg_int, tcg_shift, tcg_fpstatus);
+        tcg_gen_st_i64(tcg_double, cpu_env, freg_offs);
+        tcg_temp_free_i64(tcg_double);
+        break;
+    case 0x2: /* signed scalar->single */
+        tcg_single = tcg_temp_new_i32();
+        tcg_tmp = tcg_temp_new_i64();
+        gen_helper_vfp_sqtos(tcg_single, tcg_int, tcg_shift, tcg_fpstatus);
+        tcg_gen_extu_i32_i64(tcg_tmp, tcg_single);
+        tcg_gen_st32_i64(tcg_tmp, cpu_env, freg_offs);
+        tcg_temp_free_i32(tcg_single);
+        tcg_temp_free_i64(tcg_tmp);
+        break;
+    case 0x3: /* signed scalar->double */
+        tcg_double = tcg_temp_new_i64();
+        gen_helper_vfp_sqtod(tcg_double, tcg_int, tcg_shift, tcg_fpstatus);
+        tcg_gen_st_i64(tcg_double, cpu_env, freg_offs);
+        tcg_temp_free_i64(tcg_double);
+        break;
+    case 0x10: /* unsigned single->scalar */
+        tcg_single = tcg_temp_new_i32();
+        tcg_tmp = tcg_temp_new_i64();
+        tcg_gen_ld32u_i64(tcg_tmp, cpu_env, freg_offs);
+        tcg_gen_trunc_i64_i32(tcg_single, tcg_tmp);
+        gen_helper_vfp_touqs(tcg_int, tcg_single, tcg_shift, tcg_fpstatus);
+        tcg_temp_free_i32(tcg_single);
+        tcg_temp_free_i64(tcg_tmp);
+        break;
+    case 0x11: /* unsigned single->double */
+        tcg_double = tcg_temp_new_i64();
+        tcg_gen_ld_i64(tcg_double, cpu_env, freg_offs);
+        gen_helper_vfp_touqd(tcg_int, tcg_double, tcg_shift, tcg_fpstatus);
+        tcg_temp_free_i64(tcg_double);
+        break;
+    case 0x12: /* signed single->scalar */
+        tcg_single = tcg_temp_new_i32();
+        tcg_tmp = tcg_temp_new_i64();
+        tcg_gen_ld32u_i64(tcg_tmp, cpu_env, freg_offs);
+        tcg_gen_trunc_i64_i32(tcg_single, tcg_tmp);
+        gen_helper_vfp_tosqs(tcg_int, tcg_single, tcg_shift, tcg_fpstatus);
+        tcg_temp_free_i32(tcg_single);
+        tcg_temp_free_i64(tcg_tmp);
+        break;
+    case 0x13: /* signed single->double */
+        tcg_double = tcg_temp_new_i64();
+        tcg_gen_ld_i64(tcg_double, cpu_env, freg_offs);
+        gen_helper_vfp_tosqd(tcg_int, tcg_double, tcg_shift, tcg_fpstatus);
+        tcg_temp_free_i64(tcg_double);
+        break;
+    default:
+        unallocated_encoding(s);
+    }
+
+    /* XXX use fpcr */
+    tcg_gen_movi_i32(tcg_rmode, -1);
+    gen_helper_set_rmode(tcg_rmode, tcg_fpstatus);
+
+    if (is_32bit && direction) {
+        tcg_gen_ext32u_i64(tcg_int, tcg_int);
+    }
+
+    tcg_temp_free_i64(tcg_fpstatus);
+    tcg_temp_free_i32(tcg_shift);
+    tcg_temp_free_i32(tcg_rmode);
+}
+
+/* fixed <-> floating conversion */
+static void handle_fpfpconv(DisasContext *s, uint32_t insn)
+{
+    int opcode = get_bits(insn, 16, 3);
+    int rmode = get_bits(insn, 20, 2);
+    int type = get_bits(insn, 22, 2);
+    bool is_s = get_bits(insn, 29, 1);
+    bool direction;
+
+    if (is_s || (type > 1) || (opcode > 1)) {
+        unallocated_encoding(s);
+        return;
+    }
+
+    switch (rmode) {
+    case 0x1: /* [S|U]CVTF (scalar->float) */
+        direction = 0;
+        break;
+    case 0x3: /* FCVTZ[S|U] (float->scalar) */
+        direction = 1;
+        break;
+    default:
+        unallocated_encoding(s);
+        return;
+    }
+
+    handle_fpfpcvt(s, insn, direction, ROUND_MODE_ZERO);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2296,6 +2462,13 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         break;
     case 0x1b:
         handle_dp3s(s, insn);
+        break;
+    case 0x1e:
+        if (!get_bits(insn, 21, 1) && !get_bits(insn, 30, 1)) {
+            handle_fpfpconv(s, insn);
+        } else {
+            unallocated_encoding(s);
+        }
         break;
     default:
         unallocated_encoding(s);
