@@ -2277,6 +2277,57 @@ static void handle_fpdp2s64(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_res);
 }
 
+/* Floating-point data-processing (3 source) - 32 bit */
+static void handle_fpdp3s32(DisasContext *s, uint32_t insn)
+{
+    int rd = extract32(insn, 0, 5);
+    int rn = extract32(insn, 5, 5);
+    int ra = extract32(insn, 10, 5);
+    bool is_sub = extract32(insn, 15, 1);
+    int rm = extract32(insn, 16, 5);
+    bool is_neg = extract32(insn, 21, 1);
+    int freg_offs_n = offsetof(CPUARMState, vfp.regs[rn * 2]);
+    int freg_offs_a = offsetof(CPUARMState, vfp.regs[ra * 2]);
+    int freg_offs_m = offsetof(CPUARMState, vfp.regs[rm * 2]);
+    int freg_offs_d = offsetof(CPUARMState, vfp.regs[rd * 2]);
+    TCGv_i64 tcg_tmp = tcg_temp_new_i64();
+    TCGv_i32 tcg_op1 = tcg_temp_new_i32();
+    TCGv_i32 tcg_op2 = tcg_temp_new_i32();
+    TCGv_i32 tcg_op3 = tcg_temp_new_i32();
+    TCGv_i32 tcg_res = tcg_temp_new_i32();
+    TCGv_ptr fpst = get_fpstatus_ptr();
+
+    tcg_gen_ld_i64(tcg_tmp, cpu_env, freg_offs_n);
+    tcg_gen_trunc_i64_i32(tcg_op1, tcg_tmp);
+    tcg_gen_ld_i64(tcg_tmp, cpu_env, freg_offs_m);
+    tcg_gen_trunc_i64_i32(tcg_op2, tcg_tmp);
+    tcg_gen_ld_i64(tcg_tmp, cpu_env, freg_offs_a);
+    tcg_gen_trunc_i64_i32(tcg_op3, tcg_tmp);
+
+    if (is_neg) {
+        gen_helper_vfp_negs(tcg_op1, tcg_op1);
+        gen_helper_vfp_negs(tcg_op3, tcg_op3);
+    }
+
+    gen_helper_vfp_muls(tcg_res, tcg_op1, tcg_op2, fpst);
+    if (is_sub) {
+        gen_helper_vfp_subs(tcg_res, tcg_op3, tcg_res, fpst);
+    } else {
+        gen_helper_vfp_adds(tcg_res, tcg_op3, tcg_res, fpst);
+    }
+
+    clear_fpreg(rd);
+    tcg_gen_extu_i32_i64(tcg_tmp, tcg_res);
+    tcg_gen_st32_i64(tcg_tmp, cpu_env, freg_offs_d);
+
+    tcg_temp_free_ptr(fpst);
+    tcg_temp_free_i32(tcg_op1);
+    tcg_temp_free_i32(tcg_op2);
+    tcg_temp_free_i32(tcg_op3);
+    tcg_temp_free_i32(tcg_res);
+    tcg_temp_free_i64(tcg_tmp);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2915,6 +2966,13 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else if ((extract32(insn, 30, 2) == 0x1) && extract32(insn, 21, 1) &&
                    (extract32(insn, 10, 6) == 0x21)) {
             handle_v3add(s, insn);
+        } else {
+            unallocated_encoding(s);
+        }
+        break;
+    case 0x1f:
+        if (!extract32(insn, 29, 3) && !extract32(insn, 22, 2)) {
+            handle_fpdp3s32(s, insn);
         } else {
             unallocated_encoding(s);
         }
