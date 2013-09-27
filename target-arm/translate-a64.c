@@ -2185,6 +2185,60 @@ static void handle_fpdp1s64(DisasContext *s, uint32_t insn)
     tcg_temp_free_i64(tcg_res);
 }
 
+/* Floating-point data-processing (2 source) - 32 bit */
+static void handle_fpdp2s32(DisasContext *s, uint32_t insn)
+{
+    int rd = get_bits(insn, 0, 5);
+    int rn = get_bits(insn, 5, 5);
+    int opcode = get_bits(insn, 12, 4);
+    int rm = get_bits(insn, 16, 5);
+    int freg_offs_n = offsetof(CPUARMState, vfp.regs[rn * 2]);
+    int freg_offs_m = offsetof(CPUARMState, vfp.regs[rm * 2]);
+    int freg_offs_d = offsetof(CPUARMState, vfp.regs[rd * 2]);
+    TCGv_i64 tcg_tmp = tcg_temp_new_i64();
+    TCGv_i32 tcg_op1 = tcg_temp_new_i32();
+    TCGv_i32 tcg_op2 = tcg_temp_new_i32();
+    TCGv_i32 tcg_res = tcg_temp_new_i32();
+    TCGv_ptr fpst = get_fpstatus_ptr();
+
+    tcg_gen_ld_i64(tcg_tmp, cpu_env, freg_offs_n);
+    tcg_gen_trunc_i64_i32(tcg_op1, tcg_tmp);
+    tcg_gen_ld_i64(tcg_tmp, cpu_env, freg_offs_m);
+    tcg_gen_trunc_i64_i32(tcg_op2, tcg_tmp);
+
+    switch (opcode) {
+    case 0x0: /* FMUL */
+        gen_helper_vfp_muls(tcg_res, tcg_op1, tcg_op2, fpst);
+        break;
+    case 0x8: /* FNMUL */
+        gen_helper_vfp_muls(tcg_res, tcg_op1, tcg_op2, fpst);
+        gen_helper_vfp_negs(tcg_res, tcg_res);
+        break;
+    case 0x1: /* FDIV */
+        gen_helper_vfp_divs(tcg_res, tcg_op1, tcg_op2, fpst);
+        break;
+    case 0x2: /* FADD */
+        gen_helper_vfp_adds(tcg_res, tcg_op1, tcg_op2, fpst);
+        break;
+    case 0x3: /* FSUB */
+        gen_helper_vfp_subs(tcg_res, tcg_op1, tcg_op2, fpst);
+        break;
+    default:
+        unallocated_encoding(s);
+        return;
+    }
+
+    clear_fpreg(rd);
+    tcg_gen_extu_i32_i64(tcg_tmp, tcg_res);
+    tcg_gen_st32_i64(tcg_tmp, cpu_env, freg_offs_d);
+
+    tcg_temp_free_ptr(fpst);
+    tcg_temp_free_i32(tcg_op1);
+    tcg_temp_free_i32(tcg_op2);
+    tcg_temp_free_i32(tcg_res);
+    tcg_temp_free_i64(tcg_tmp);
+}
+
 /* SIMD ORR */
 static void handle_simdorr(DisasContext *s, uint32_t insn)
 {
@@ -2782,6 +2836,9 @@ void disas_a64_insn(CPUARMState *env, DisasContext *s)
         } else if (!get_bits(insn, 29, 3) && (get_bits(insn, 22, 2) == 0x1) &&
                    get_bits(insn, 21, 1) && (get_bits(insn, 10, 5) == 0x10)) {
             handle_fpdp1s64(s, insn);
+        } else if (!get_bits(insn, 29, 3) && !get_bits(insn, 22, 2) &&
+                   get_bits(insn, 21, 1) && (get_bits(insn, 10, 2) == 0x2)) {
+            handle_fpdp2s32(s, insn);
         } else {
             unallocated_encoding(s);
         }
