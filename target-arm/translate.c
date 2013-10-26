@@ -10013,6 +10013,7 @@ static inline void gen_intermediate_code_internal(ARMCPU *cpu,
     dc->pc = pc_start;
     dc->singlestep_enabled = cs->singlestep_enabled;
     dc->condjmp = 0;
+    dc->tmp_i64_nr = 0;
 
     if (ARM_TBFLAG_AARCH64_STATE(tb->flags)) {
         dc->aarch64 = 1;

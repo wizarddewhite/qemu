@@ -7,6 +7,8 @@
 #define DISAS_SWI 5
 
 /* internal defines */
+#define MAX_TMP_I64 16
+
 typedef struct DisasContext {
     target_ulong pc;
     uint32_t insn;
@@ -29,6 +31,8 @@ typedef struct DisasContext {
     int vec_len;
     int vec_stride;
     int aarch64;
+    int tmp_i64_nr;
+    TCGv_i64 tmp_i64[MAX_TMP_I64];
 } DisasContext;
 
 extern TCGv_ptr cpu_env;
