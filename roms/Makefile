@@ -55,6 +55,7 @@ default:
 	@echo "  efirom         -- update nic roms (bios+efi, this needs"
 	@echo "                    the EfiRom utility from edk2 / tianocore)"
 	@echo "  slof           -- update slof.bin"
+	@echo "  u-boot.e500    -- update u-boot.e500"
 
 bios: build-seabios-config-seabios-128k build-seabios-config-seabios-256k
 	cp seabios/builds/seabios-128k/bios.bin ../pc-bios/bios.bin
@@ -132,6 +133,19 @@ slof:
 	$(MAKE) -C SLOF CROSS=$(powerpc64_cross_prefix) qemu
 	cp SLOF/boot_rom.bin ../pc-bios/slof.bin
 
+u-boot.e500:
+	# examples fail to honor cflags, just remove them
+	rm -rf u-boot/examples
+	sed -i 's/examples//g' u-boot/Makefile
+	# Make linker script biarch aware
+	sed -i 's/OUTPUT_ARCH(powerpc)/OUTPUT_ARCH(powerpc:common)/' \
+		u-boot/arch/powerpc/cpu/mpc85xx/u-boot.lds
+	# Compile u-boot
+	$(MAKE) -C u-boot O=build.e500 qemu-ppce500_config
+	$(MAKE) -C u-boot CROSS_COMPILE=$(powerpc64_cross_prefix) \
+		O=build.e500 KCFLAGS=-m32 KAFLAGS=-m32 \
+		LDFLAGS=-melf32ppc KCPPFLAGS=-m32 V=1 u-boot.bin
+	strip u-boot/build.e500/u-boot -o ../pc-bios/u-boot.e500
 
 clean:
 	rm -rf seabios/.config seabios/out seabios/builds
@@ -141,3 +155,4 @@ clean:
 	rm -f sgabios/.depend
 	$(MAKE) -C ipxe/src veryclean
 	$(MAKE) -C SLOF clean
+	rm -rf u-boot/build.e500
