@@ -4866,10 +4866,6 @@ sigsegv:
 /* See arch/powerpc/kernel/signal_32.c.  */
 static int do_setcontext(struct target_ucontext *ucp, CPUPPCState *env, int sig)
 {
-#if defined(TARGET_PPC64)
-    fprintf(stderr, "do_setcontext: not implemented\n");
-    return 0;
-#else
     struct target_mcontext *mcp;
     target_ulong mcp_addr;
     sigset_t blocked;
@@ -4879,7 +4875,12 @@ static int do_setcontext(struct target_ucontext *ucp, CPUPPCState *env, int sig)
                        sizeof (set)))
         return 1;
 
+#if defined(TARGET_PPC64)
+    mcp_addr = h2g(ucp) +
+        offsetof(struct target_ucontext, tuc_sigcontext.mcontext);
+#else
     __get_user(mcp_addr, &ucp->tuc_regs);
+#endif
 
     if (!lock_user_struct(VERIFY_READ, mcp, mcp_addr, 1))
         return 1;
@@ -4890,7 +4891,6 @@ static int do_setcontext(struct target_ucontext *ucp, CPUPPCState *env, int sig)
 
     unlock_user_struct(mcp, mcp_addr, 1);
     return 0;
-#endif
 }
 
 long do_rt_sigreturn(CPUPPCState *env)
