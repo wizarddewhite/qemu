@@ -35,7 +35,8 @@ struct QEMUMachine {
         use_sclp:1,
         no_floppy:1,
         no_cdrom:1,
-        no_sdcard:1;
+        no_sdcard:1,
+        has_dynamic_sysbus:1;
     int is_default;
     const char *default_machine_opts;
     const char *default_boot_order;
@@ -93,7 +94,8 @@ struct MachineClass {
         use_sclp:1,
         no_floppy:1,
         no_cdrom:1,
-        no_sdcard:1;
+        no_sdcard:1,
+        has_dynamic_sysbus:1;
     int is_default;
     const char *default_machine_opts;
     const char *default_boot_order;
@@ -110,6 +112,8 @@ struct MachineClass {
 struct MachineState {
     /*< private >*/
     Object parent_obj;
+    Notifier sysbus_notifier;
+
     /*< public >*/
 
     char *accel;
