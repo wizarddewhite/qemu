@@ -435,12 +435,12 @@ static void ppc_core99_init(MachineState *machine)
     }
 #endif
     dev = qdev_create(NULL, TYPE_MACIO_NVRAM);
-    qdev_prop_set_uint32(dev, "size", 0x2000);
-    qdev_prop_set_uint32(dev, "it_shift", 1);
+    qdev_prop_set_uint32(dev, "size", 0x4000);
+    qdev_prop_set_uint32(dev, "it_shift", 0);
     qdev_init_nofail(dev);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, nvram_addr);
     nvr = MACIO_NVRAM(dev);
-    pmac_format_nvram_partition(nvr, 0x2000);
+    pmac_format_nvram_partition(nvr, 0x4000);
     /* No PCI init: the BIOS will do it */
 
     fw_cfg = fw_cfg_init(0, 0, CFG_ADDR, CFG_ADDR + 2);
@@ -482,6 +482,7 @@ static void ppc_core99_init(MachineState *machine)
     fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_CLOCKFREQ, CLOCKFREQ);
     fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_BUSFREQ, BUSFREQ);
     fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_NVRAM_ADDR, nvram_addr);
+    fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_NVRAM_FLAT, 1);
 
     qemu_register_boot_set(fw_cfg_boot_set, fw_cfg);
 }
