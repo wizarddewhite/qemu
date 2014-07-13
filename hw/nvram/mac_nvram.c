@@ -40,32 +40,53 @@
 #define DEF_SYSTEM_SIZE 0xc10
 
 /* macio style NVRAM device */
-static void macio_nvram_writeb(void *opaque, hwaddr addr,
-                               uint64_t value, unsigned size)
+static void macio_nvram_write(void *opaque, hwaddr addr,
+                              uint64_t value, unsigned size)
 {
     MacIONVRAMState *s = opaque;
 
     addr = (addr >> s->it_shift) & (s->size - 1);
-    s->data[addr] = value;
-    NVR_DPRINTF("writeb addr %04" PHYS_PRIx " val %" PRIx64 "\n", addr, value);
+    switch (size) {
+    case 1:
+        s->data[addr] = value;
+        break;
+    case 2:
+        stw_be_p(&s->data[addr], value);
+        break;
+    case 4:
+        stl_be_p(&s->data[addr], value);
+        break;
+    }
+    NVR_DPRINTF("write%d addr %04" PRIx64 " val %" PRIx64 "\n", size, addr,
+                value);
 }
 
-static uint64_t macio_nvram_readb(void *opaque, hwaddr addr,
-                                  unsigned size)
+static uint64_t macio_nvram_read(void *opaque, hwaddr addr,
+                                 unsigned size)
 {
     MacIONVRAMState *s = opaque;
-    uint32_t value;
+    uint32_t value = 0;
 
     addr = (addr >> s->it_shift) & (s->size - 1);
-    value = s->data[addr];
-    NVR_DPRINTF("readb addr %04x val %x\n", (int)addr, value);
+    switch (size) {
+    case 1:
+        value = s->data[addr];
+        break;
+    case 2:
+        value = lduw_be_p(&s->data[addr]);
+        break;
+    case 4:
+        value = ldl_be_p(&s->data[addr]);
+        break;
+    }
+    NVR_DPRINTF("read%d addr %04x val %x\n", size, (int)addr, value);
 
     return value;
 }
 
 static const MemoryRegionOps macio_nvram_ops = {
-    .read = macio_nvram_readb,
-    .write = macio_nvram_writeb,
+    .read = macio_nvram_read,
+    .write = macio_nvram_write,
     .endianness = DEVICE_BIG_ENDIAN,
 };
 
