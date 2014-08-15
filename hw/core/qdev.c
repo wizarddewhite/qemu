@@ -403,10 +403,14 @@ qemu_irq qdev_get_gpio_in(DeviceState *dev, int n)
 void qdev_connect_gpio_out_named(DeviceState *dev, const char *name, int n,
                                  qemu_irq pin)
 {
-    NamedGPIOList *gpio_list = qdev_get_named_gpio_list(dev, name);
-
-    assert(n >= 0 && n < gpio_list->num_out);
-    gpio_list->out[n] = pin;
+    char *propname = g_strdup_printf("%s[%d]",
+                                     name ? name : "unnamed-gpio-out", n);
+    if (pin) {
+        object_property_add_child(qdev_get_machine(), "non-qdev-gpio[*]",
+                                  OBJECT(pin), NULL);
+    }
+    object_property_set_link(OBJECT(dev), OBJECT(pin), propname, &error_abort);
+    g_free(propname);
 }
 
 void qdev_connect_gpio_out(DeviceState * dev, int n, qemu_irq pin)
