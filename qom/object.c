@@ -870,7 +870,7 @@ char *object_property_get_str(Object *obj, const char *name,
 void object_property_set_link(Object *obj, Object *value,
                               const char *name, Error **errp)
 {
-    gchar *path = object_get_canonical_path(value);
+    gchar *path = value ? object_get_canonical_path(value) : NULL;
     object_property_set_str(obj, path, name, errp);
     g_free(path);
 }
@@ -1173,7 +1173,7 @@ static void object_set_link_property(Object *obj, Visitor *v, void *opaque,
 
     visit_type_str(v, &path, name, &local_err);
 
-    if (!local_err && strcmp(path, "") != 0) {
+    if (!local_err && path && strcmp(path, "") != 0) {
         new_target = object_resolve_link(obj, name, path, &local_err);
     }
 
