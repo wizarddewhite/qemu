@@ -68,6 +68,7 @@ enum {
     VIRT_UART,
     VIRT_MMIO,
     VIRT_RTC,
+    VIRT_FSL_MC,
 };
 
 typedef struct MemMapEntry {
@@ -110,6 +111,7 @@ static const MemMapEntry a15memmap[] = {
     [VIRT_MMIO] =       { 0x0a000000, 0x00000200 },
     /* ...repeating for a total of NUM_VIRTIO_TRANSPORTS, each of that size */
     /* 0x10000000 .. 0x40000000 reserved for PCI */
+    [VIRT_FSL_MC] =     { 0x10000000, 0x00050000 },
     [VIRT_MEM] =        { 0x40000000, 30ULL * 1024 * 1024 * 1024 },
 };
 
@@ -117,6 +119,7 @@ static const int a15irqmap[] = {
     [VIRT_UART] = 1,
     [VIRT_RTC] = 2,
     [VIRT_MMIO] = 16, /* ...to 16 + NUM_VIRTIO_TRANSPORTS - 1 */
+    [VIRT_FSL_MC] = 3,
 };
 
 static VirtBoardInfo machines[] = {
@@ -451,6 +454,29 @@ static void create_virtio_devices(const VirtBoardInfo *vbi, qemu_irq *pic)
     }
 }
 
+static void create_fsl_mc(const VirtBoardInfo *vbi, qemu_irq *pic)
+{
+    char *nodename;
+    hwaddr base = vbi->memmap[VIRT_FSL_MC].base;
+    const char compat[] = "fsl,qoriq-mc";
+    DeviceState *mcdev;
+    SysBusDevice *mcsdev;
+
+    mcdev = qdev_create(NULL, "fsl-mc-host");
+    qdev_init_nofail(mcdev);
+    mcsdev = SYS_BUS_DEVICE(mcdev);
+    sysbus_mmio_map(mcsdev, 0, base);
+    sysbus_mmio_map(mcsdev, 1, base + 0x10000);
+
+    nodename = g_strdup_printf("/fsl-mc@%" PRIx64, base);
+    qemu_fdt_add_subnode(vbi->fdt, nodename);
+    qemu_fdt_setprop(vbi->fdt, nodename, "compatible", compat, sizeof(compat));
+    qemu_fdt_setprop_sized_cells(vbi->fdt, nodename, "reg",
+                                 2, base, 2, 0x40,
+                                 2, base + 0x10000, 2, 0x40000);
+    g_free(nodename);
+}
+
 static void create_one_flash(const char *name, hwaddr flashbase,
                              hwaddr flashsize)
 {
@@ -603,6 +629,8 @@ static void machvirt_init(MachineState *machine)
      * no backend is created the transport will just sit harmlessly idle.
      */
     create_virtio_devices(vbi, pic);
+
+    create_fsl_mc(vbi, pic);
 
     vbi->bootinfo.ram_size = machine->ram_size;
     vbi->bootinfo.kernel_filename = machine->kernel_filename;
