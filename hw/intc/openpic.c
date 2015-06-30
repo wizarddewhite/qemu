@@ -43,7 +43,7 @@
 #include "qemu/bitops.h"
 #include "qapi/qmp/qerror.h"
 
-//#define DEBUG_OPENPIC
+#define DEBUG_OPENPIC
 
 #ifdef DEBUG_OPENPIC
 static const int debug_openpic = 1;
@@ -53,7 +53,7 @@ static const int debug_openpic = 0;
 
 #define DPRINTF(fmt, ...) do { \
         if (debug_openpic) { \
-            printf(fmt , ## __VA_ARGS__); \
+            fprintf(stderr, fmt , ## __VA_ARGS__); \
         } \
     } while (0)
 
