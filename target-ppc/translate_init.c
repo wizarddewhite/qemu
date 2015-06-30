@@ -2885,7 +2885,7 @@ static void init_excp_7x0 (CPUPPCState *env)
 {
 #if !defined(CONFIG_USER_ONLY)
     env->excp_vectors[POWERPC_EXCP_RESET]    = 0x00000100;
-    env->excp_vectors[POWERPC_EXCP_MCHECK]   = 0x00000200;
+    env->excp_vectors[POWERPC_EXCP_MCHECK]   = 0x00000A00;
     env->excp_vectors[POWERPC_EXCP_DSI]      = 0x00000300;
     env->excp_vectors[POWERPC_EXCP_ISI]      = 0x00000400;
     env->excp_vectors[POWERPC_EXCP_EXTERNAL] = 0x00000500;

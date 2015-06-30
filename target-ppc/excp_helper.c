@@ -127,7 +127,7 @@ static inline void powerpc_excp(PowerPCCPU *cpu, int excp_model, int excp)
         }
         goto store_next;
     case POWERPC_EXCP_MCHECK:    /* Machine check exception                  */
-        if (msr_me == 0) {
+        if (0 && msr_me == 0) {
             /* Machine check exception is not enabled.
              * Enter checkstop state.
              */

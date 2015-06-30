@@ -1574,6 +1574,7 @@ exit:
     fclose(f);
 }
 
+void ppc_set_irq(PowerPCCPU *cpu, int n_IRQ, int level);
 void qmp_inject_nmi(Error **errp)
 {
 #if defined(TARGET_I386)
@@ -1589,7 +1590,13 @@ void qmp_inject_nmi(Error **errp)
         }
     }
 #else
-    nmi_monitor_handle(monitor_get_cpu_index(), errp);
+    CPUState *cs;
+
+    CPU_FOREACH(cs) {
+        PowerPCCPU *cpu = POWERPC_CPU(cs);
+
+        ppc_set_irq(cpu, PPC_INTERRUPT_MCK, 1);
+    }
 #endif
 }
 
