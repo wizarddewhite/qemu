@@ -1152,8 +1152,12 @@ MemTxResult memory_region_dispatch_read(MemoryRegion *mr,
         return MEMTX_DECODE_ERROR;
     }
 
+
     r = memory_region_dispatch_read1(mr, addr, pval, size, attrs);
     adjust_endianness(mr, pval, size);
+
+if (0)fprintf(stderr, "XXX %s: mr=%s addr=%#lx len=%d val=%#lx\n", __func__, mr->name, addr, size, *pval);
+
     return r;
 }
 
@@ -1169,6 +1173,7 @@ MemTxResult memory_region_dispatch_write(MemoryRegion *mr,
     }
 
     adjust_endianness(mr, &data, size);
+if (0)fprintf(stderr, "XXX %s: mr=%s addr=%#lx len=%d val=%#lx\n", __func__, mr->name, addr, size, data);
 
     if (mr->ops->write) {
         return access_with_adjusted_size(addr, &data, size,
