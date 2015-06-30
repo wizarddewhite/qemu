@@ -291,3 +291,69 @@ void helper_tbegin(CPUPPCState *env)
     env->spr[SPR_TFHAR] = env->nip + 4;
     env->crf[0] = 0xB; /* 0b1010 = transaction failure */
 }
+
+void qmp_stop(void *p);
+void helper_print_load(CPUPPCState *env, target_ulong ea, target_ulong val)
+{
+    static bool should_dump = false;
+    static bool should_print = false;
+
+    if ((env->nip >> 24) != 0x68) {
+        return;
+    }
+
+    //if (ea == 0xffc0aa1c)
+    if (ea == 0xFFC002C6)
+        should_dump = true;
+
+    if (ea == 0xffc00344) {
+        should_print = true;
+    }
+
+    if (!should_print) goto out;
+
+    //if ((ea & 0xffffff00) != 0xffc00300) goto out;
+
+    if (((ea & 0xfff00000) == 0xffc00000) ||
+        ((ea & 0xff000000) == 0x1f000000)) {
+        printf("XXX 68k inst at 0x%08x -> %04x\n", (int)ea, cpu_lduw_data(env, ea));
+    } else {
+        printf("XXX 68k inst at 0x%08x\n", (int)ea);
+    }
+    printf("    A0: %#010x A1: %#010x A2: %#010x A3: %#010x A4: %#010x A5: %#010x A6: %#010x A7: %#010x\n",
+           (int)env->gpr[16], (int)env->gpr[17], (int)env->gpr[18], (int)env->gpr[19], (int)env->gpr[20], (int)env->gpr[21], (int)env->gpr[22], (int)env->gpr[1]);
+
+    printf("    D0: %#010x D1: %#010x D2: %#010x D3: %#010x D4: %#010x D5: %#010x D6: %#010x D7: %#010x\n",
+           (int)env->gpr[8], (int)env->gpr[9], (int)env->gpr[10], (int)env->gpr[11], (int)env->gpr[12], (int)env->gpr[13], (int)env->gpr[14], (int)env->gpr[15]);
+    if (should_dump && ((ea & 0xfff00000) == 0xffc00000)) {
+        CPUState *cs = CPU(ppc_env_get_cpu(env));
+        printf("    DSErrCode = %04x\n", lduw_phys(cs->as, 0x4af0));
+#if 0
+        printf("    *0x5fffef78 = %#06x *0x5fffef7a = %#06x *0x5fffef80 = %#06x\n",
+            cpu_lduw_data(env, 0x5fffef78),
+            cpu_lduw_data(env, 0x5fffef7a),
+            cpu_lduw_data(env, 0x5fffef80));
+        printf("    *0x5fffef18 = %#010x\n", cpu_ldl_data(env, 0x5fffef18));
+        printf("    *0x3f7ff1cc = %#010x *0x3f7ff2cc = %#010x\n", ldl_phys(cs->as, 0x3f7ff1cc), ldl_phys(cs->as, 0x3f7ff2cc));
+#endif
+    }
+
+out:
+    if (ea == 0xffc046ee) {
+        qmp_stop(NULL);
+    }
+
+    if (ea == 0x1fb81c90) {
+        qmp_stop(NULL);
+    }
+
+#if 0
+    for (i = 0; i < 8; i++) {
+        printf(
+    }
+
+    if ((env->nip >> 24) == 0x68) {
+        printf("XXX load from %#lx -> %#lx\n", (long)ea, (long)val);
+    }
+#endif
+}
