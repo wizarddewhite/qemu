@@ -96,6 +96,9 @@ typedef struct CUDAState {
 
     ADBBusState adb_bus;
     CUDATimer timers[2];
+#define CUDA_TIMER_SET_SR      0
+#define CUDA_TIMER_UNSET_TREQ  1
+    QEMUTimer *hack_timers[2];
 
     uint32_t tick_offset;
     uint64_t frequency;
@@ -106,6 +109,9 @@ typedef struct CUDAState {
     int data_in_size;
     int data_in_index;
     int data_out_index;
+    bool sr_delay_active;
+    bool sr_delay_data;
+    int ifr_read_count;
 
     qemu_irq irq;
     uint8_t autopoll;

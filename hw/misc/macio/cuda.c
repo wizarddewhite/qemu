@@ -57,6 +57,8 @@
 #define IER_SET		0x80		/* set bits in IER */
 #define IER_CLR		0		/* clear bits in IER */
 #define SR_INT		0x04		/* Shift register full/empty */
+#define SR_DATA_INT     0x08
+#define SR_CLOCK_INT    0x10
 #define T1_INT          0x40            /* Timer 1 interrupt */
 #define T2_INT          0x20            /* Timer 2 interrupt */
 
@@ -116,47 +118,49 @@ static void cuda_timer_update(CUDAState *s, CUDATimer *ti,
 
 static void cuda_update_irq(CUDAState *s)
 {
-    if (s->ifr & s->ier & (SR_INT | T1_INT)) {
+CUDA_DPRINTF("cuda_update_irq: ifr=%02x ier=%02x\n", s->ifr, s->ier);
+    if (s->ifr & s->ier & (SR_INT | T1_INT | T2_INT)) {
         qemu_irq_raise(s->irq);
     } else {
         qemu_irq_lower(s->irq);
     }
 }
 
-static uint64_t get_tb(uint64_t freq)
+static uint64_t get_tb(uint64_t time, uint64_t freq)
 {
-    return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
-                    freq, get_ticks_per_sec());
+    return muldiv64(time, freq, get_ticks_per_sec());
 }
 
-static unsigned int get_counter(CUDATimer *s)
+static unsigned int get_counter(CUDAState *s, CUDATimer *ti)
 {
     int64_t d;
     unsigned int counter;
     uint64_t tb_diff;
+    uint64_t current_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     /* Reverse of the tb calculation algorithm that Mac OS X uses on bootup. */
-    tb_diff = get_tb(s->frequency) - s->load_time;
-    d = (tb_diff * 0xBF401675E5DULL) / (s->frequency << 24);
+    tb_diff = get_tb(current_time, s->frequency) -
+              get_tb(ti->load_time, s->frequency);
+    d = (tb_diff * 0xBF401675E5DULL) / (ti->frequency << 24);
 
-    if (s->index == 0) {
+    if (ti->index == 0) {
         /* the timer goes down from latch to -1 (period of latch + 2) */
-        if (d <= (s->counter_value + 1)) {
-            counter = (s->counter_value - d) & 0xffff;
+        if (d <= (ti->counter_value + 1)) {
+            counter = (ti->counter_value - d) & 0xffff;
         } else {
-            counter = (d - (s->counter_value + 1)) % (s->latch + 2);
-            counter = (s->latch - counter) & 0xffff;
+            counter = (d - (ti->counter_value + 1)) % (ti->latch + 2);
+            counter = (ti->latch - counter) & 0xffff;
         }
     } else {
-        counter = (s->counter_value - d) & 0xffff;
+        counter = (ti->counter_value - d) & 0xffff;
     }
     return counter;
 }
 
 static void set_counter(CUDAState *s, CUDATimer *ti, unsigned int val)
 {
-    CUDA_DPRINTF("T%d.counter=%d\n", 1 + (ti->timer == NULL), val);
-    ti->load_time = get_tb(s->frequency);
+    CUDA_DPRINTF("T%d.counter=%d\n", 1 + (ti == &s->timers[0] ? 0 : 1), val);
+    ti->load_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     ti->counter_value = val;
     cuda_timer_update(s, ti, ti->load_time);
 }
@@ -197,9 +201,11 @@ static int64_t get_next_irq_time(CUDATimer *s, int64_t current_time)
 static void cuda_timer_update(CUDAState *s, CUDATimer *ti,
                               int64_t current_time)
 {
+    bool is_timer1 = (ti == &s->timers[0]);
+
     if (!ti->timer)
         return;
-    if ((s->acr & T1MODE) != T1MODE_CONT) {
+    if (is_timer1 && ((s->acr & T1MODE) != T1MODE_CONT)) {
         timer_del(ti->timer);
     } else {
         ti->next_irq_time = get_next_irq_time(ti, current_time);
@@ -215,6 +221,78 @@ static void cuda_timer1(void *opaque)
     cuda_timer_update(s, ti, ti->next_irq_time);
     s->ifr |= T1_INT;
     cuda_update_irq(s);
+}
+
+static void cuda_timer2(void *opaque)
+{
+    CUDAState *s = opaque;
+//    CUDATimer *ti = &s->timers[1];
+
+//    cuda_timer_update(s, ti, ti->next_irq_time);
+printf("CUDA: Firing T2\n");
+    s->ifr |= T2_INT;
+    cuda_update_irq(s);
+}
+
+static void cuda_set_sr(void *opaque)
+{
+    CUDAState *s = opaque;
+
+printf("CUDA: %s:%d\n", __func__, __LINE__);
+    s->ifr |= SR_INT | SR_CLOCK_INT;
+    if (s->sr_delay_data) {
+        s->ifr |= SR_DATA_INT;
+    }
+
+    s->ifr_read_count = 0;
+    s->sr_delay_active = false;
+    s->sr_delay_data = false;
+
+    cuda_update_irq(s);
+}
+
+static void cuda_unset_treq(void *opaque)
+{
+    CUDAState *s = opaque;
+
+printf("CUDA: %s:%d\n", __func__, __LINE__);
+    s->b &= ~TREQ;
+    cuda_update_irq(s);
+}
+
+static void cuda_delay_set_sr(CUDAState *s, bool data)
+{
+    int64_t expire;
+
+    s->ifr_read_count = 0;
+    s->sr_delay_active = true;
+    s->sr_delay_data = data;
+
+    if (s->dirb == 0xff) {
+        /* Not in Mac OS, fire the IRQ directly */
+        cuda_set_sr(s);
+        return;
+    }
+
+printf("CUDA: %s:%d\n", __func__, __LINE__);
+
+    expire  = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 300 * SCALE_US;
+    timer_mod(s->hack_timers[CUDA_TIMER_SET_SR], expire);
+}
+
+static void cuda_delay_unset_treq(CUDAState *s)
+{
+    int64_t expire;
+
+    if (s->dirb == 0xff) {
+        /* Not in Mac OS, fire the IRQ directly */
+        cuda_unset_treq(s);
+        return;
+    }
+
+printf("CUDA: %s:%d\n", __func__, __LINE__);
+    expire  = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 10 * SCALE_US;
+    timer_mod(s->hack_timers[CUDA_TIMER_UNSET_TREQ], expire);
 }
 
 static uint32_t cuda_readb(void *opaque, hwaddr addr)
@@ -237,12 +315,12 @@ static uint32_t cuda_readb(void *opaque, hwaddr addr)
         val = s->dira;
         break;
     case 4:
-        val = get_counter(&s->timers[0]) & 0xff;
+        val = get_counter(s, &s->timers[0]) & 0xff;
         s->ifr &= ~T1_INT;
         cuda_update_irq(s);
         break;
     case 5:
-        val = get_counter(&s->timers[0]) >> 8;
+        val = get_counter(s, &s->timers[0]) >> 8;
         cuda_update_irq(s);
         break;
     case 6:
@@ -253,16 +331,25 @@ static uint32_t cuda_readb(void *opaque, hwaddr addr)
         val = (s->timers[0].latch >> 8) & 0xff;
         break;
     case 8:
-        val = get_counter(&s->timers[1]) & 0xff;
+        val = get_counter(s, &s->timers[1]) & 0xff;
+printf("CUDA: Clearing T2\n");
         s->ifr &= ~T2_INT;
+        s->timers[1].latch = get_counter(s, &s->timers[1]) & 0xff;
+        //set_counter(s, &s->timers[1], get_counter(s, &s->timers[1]));
         break;
     case 9:
-        val = get_counter(&s->timers[1]) >> 8;
+        val = get_counter(s, &s->timers[1]) >> 8;
         break;
     case 10:
         val = s->sr;
-        s->ifr &= ~SR_INT;
+        s->ifr &= ~(SR_INT | SR_CLOCK_INT | SR_DATA_INT);
         cuda_update_irq(s);
+
+        if (s->sr_delay_active) {
+printf("CUDA: %s:%d sr_delay_active on reg=0xa\n", __func__, __LINE__);
+            timer_del(s->hack_timers[CUDA_TIMER_SET_SR]);
+            cuda_set_sr(s);
+        }
         break;
     case 11:
         val = s->acr;
@@ -272,8 +359,16 @@ static uint32_t cuda_readb(void *opaque, hwaddr addr)
         break;
     case 13:
         val = s->ifr;
-        if (s->ifr & s->ier)
+        if (s->ifr & s->ier) {
             val |= 0x80;
+        }
+
+        if (s->sr_delay_active && (++s->ifr_read_count >= 4)) {
+printf("CUDA: %s:%d sr_delay_active on reg=0xd\n", __func__, __LINE__);
+            timer_del(s->hack_timers[CUDA_TIMER_SET_SR]);
+            cuda_set_sr(s);
+        }
+
         break;
     case 14:
         val = s->ier | 0x80;
@@ -283,7 +378,7 @@ static uint32_t cuda_readb(void *opaque, hwaddr addr)
         val = s->anh;
         break;
     }
-    if (addr != 13 || val != 0) {
+    if (1 || addr != 13 || val != 0) {
         CUDA_DPRINTF("read: reg=0x%x val=%02x\n", (int)addr, val);
     }
 
@@ -299,7 +394,7 @@ static void cuda_writeb(void *opaque, hwaddr addr, uint32_t val)
 
     switch(addr) {
     case 0:
-        s->b = val;
+        s->b = (val & s->dirb) | (s->b & ~s->dirb);
         cuda_update(s);
         break;
     case 1:
@@ -330,11 +425,13 @@ static void cuda_writeb(void *opaque, hwaddr addr, uint32_t val)
         cuda_timer_update(s, &s->timers[0], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         break;
     case 8:
-        s->timers[1].latch = val;
-        set_counter(s, &s->timers[1], val);
+        s->timers[1].latch = (s->timers[1].latch & 0xff00) | val;
+        //cuda_timer_update(s, &s->timers[1], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         break;
     case 9:
-        set_counter(s, &s->timers[1], (val << 8) | s->timers[1].latch);
+        s->timers[1].latch = (s->timers[1].latch & 0xff) | (val << 8);
+        s->ifr &= ~T2_INT;
+        set_counter(s, &s->timers[1], s->timers[1].latch);
         break;
     case 10:
         s->sr = val;
@@ -384,8 +481,7 @@ static void cuda_update(CUDAState *s)
                 if (s->data_out_index < sizeof(s->data_out)) {
                     CUDA_DPRINTF("send: %02x\n", s->sr);
                     s->data_out[s->data_out_index++] = s->sr;
-                    s->ifr |= SR_INT;
-                    cuda_update_irq(s);
+                    cuda_delay_set_sr(s, false);
                 }
             }
         } else {
@@ -398,8 +494,7 @@ static void cuda_update(CUDAState *s)
                     if (s->data_in_index >= s->data_in_size) {
                         s->b = (s->b | TREQ);
                     }
-                    s->ifr |= SR_INT;
-                    cuda_update_irq(s);
+                    cuda_delay_set_sr(s, true);
                 }
             }
         }
@@ -411,19 +506,19 @@ static void cuda_update(CUDAState *s)
                 s->b = (s->b | TREQ);
             else
                 s->b = (s->b & ~TREQ);
-            s->ifr |= SR_INT;
-            cuda_update_irq(s);
+            cuda_delay_set_sr(s, false);
+            s->sr = 0;
         } else {
             if (!(s->last_b & TIP)) {
                 /* handle end of host to cuda transfer */
                 packet_received = (s->data_out_index > 0);
                 /* always an IRQ at the end of transfer */
-                s->ifr |= SR_INT;
-                cuda_update_irq(s);
+                cuda_delay_set_sr(s, false);
+                s->sr = 0;
             }
             /* signal if there is data to read */
             if (s->data_in_index < s->data_in_size) {
-                s->b = (s->b & ~TREQ);
+                cuda_delay_unset_treq(s);
             }
         }
     }
@@ -456,8 +551,7 @@ static void cuda_send_packet_to_host(CUDAState *s,
     s->data_in_size = len;
     s->data_in_index = 0;
     cuda_update(s);
-    s->ifr |= SR_INT;
-    cuda_update_irq(s);
+    cuda_delay_set_sr(s, false);
 }
 
 static void cuda_adb_poll(void *opaque)
@@ -480,7 +574,7 @@ static void cuda_adb_poll(void *opaque)
 static void cuda_receive_packet(CUDAState *s,
                                 const uint8_t *data, int len)
 {
-    uint8_t obuf[16];
+    uint8_t obuf[16] = { CUDA_PACKET, 0, data[0] };
     int autopoll;
     uint32_t ti;
 
@@ -497,23 +591,16 @@ static void cuda_receive_packet(CUDAState *s,
                 timer_del(s->adb_poll_timer);
             }
         }
-        obuf[0] = CUDA_PACKET;
-        obuf[1] = data[1];
-        cuda_send_packet_to_host(s, obuf, 2);
+        //obuf[1] = data[1];
+        cuda_send_packet_to_host(s, obuf, 3);
         break;
     case CUDA_SET_TIME:
         ti = (((uint32_t)data[1]) << 24) + (((uint32_t)data[2]) << 16) + (((uint32_t)data[3]) << 8) + data[4];
         s->tick_offset = ti - (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / get_ticks_per_sec());
-        obuf[0] = CUDA_PACKET;
-        obuf[1] = 0;
-        obuf[2] = 0;
         cuda_send_packet_to_host(s, obuf, 3);
         break;
     case CUDA_GET_TIME:
         ti = s->tick_offset + (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / get_ticks_per_sec());
-        obuf[0] = CUDA_PACKET;
-        obuf[1] = 0;
-        obuf[2] = 0;
         obuf[3] = ti >> 24;
         obuf[4] = ti >> 16;
         obuf[5] = ti >> 8;
@@ -524,23 +611,36 @@ static void cuda_receive_packet(CUDAState *s,
     case CUDA_SET_DEVICE_LIST:
     case CUDA_SET_AUTO_RATE:
     case CUDA_SET_POWER_MESSAGES:
-        obuf[0] = CUDA_PACKET;
-        obuf[1] = 0;
-        cuda_send_packet_to_host(s, obuf, 2);
+        cuda_send_packet_to_host(s, obuf, 3);
         break;
     case CUDA_POWERDOWN:
-        obuf[0] = CUDA_PACKET;
-        obuf[1] = 0;
-        cuda_send_packet_to_host(s, obuf, 2);
+        cuda_send_packet_to_host(s, obuf, 3);
         qemu_system_shutdown_request();
         break;
     case CUDA_RESET_SYSTEM:
-        obuf[0] = CUDA_PACKET;
-        obuf[1] = 0;
-        cuda_send_packet_to_host(s, obuf, 2);
+        cuda_send_packet_to_host(s, obuf, 3);
         qemu_system_reset_request();
         break;
+    case CUDA_COMBINED_FORMAT_IIC:
+        obuf[0] = ERROR_PACKET;
+        obuf[1] = 0x5;
+        obuf[2] = CUDA_PACKET;
+        obuf[3] = data[0];
+        cuda_send_packet_to_host(s, obuf, 4);
+        break;
+    case CUDA_GET_SET_IIC:
+        if (len == 4) {
+            cuda_send_packet_to_host(s, obuf, 3);
+        } else {
+            obuf[0] = ERROR_PACKET;
+            obuf[1] = 0x2;
+            obuf[2] = CUDA_PACKET;
+            obuf[3] = data[0];
+            cuda_send_packet_to_host(s, obuf, 4);
+        }
+        break;
     default:
+        cuda_send_packet_to_host(s, obuf, 3);
         break;
     }
 }
@@ -560,19 +660,21 @@ static void cuda_receive_packet_from_host(CUDAState *s,
     switch(data[0]) {
     case ADB_PACKET:
         {
-            uint8_t obuf[ADB_MAX_OUT_LEN + 2];
+            uint8_t obuf[ADB_MAX_OUT_LEN + 3];
             int olen;
-            olen = adb_request(&s->adb_bus, obuf + 2, data + 1, len - 1);
-            if (olen > 0) {
+            olen = adb_request(&s->adb_bus, obuf + 3, data + 1, len - 1);
+            if (olen >= 0) {
                 obuf[0] = ADB_PACKET;
                 obuf[1] = 0x00;
+                obuf[2] = data[1];
             } else {
                 /* error */
                 obuf[0] = ADB_PACKET;
                 obuf[1] = -olen;
+                obuf[2] = data[1];
                 olen = 0;
             }
-            cuda_send_packet_to_host(s, obuf, olen + 2);
+            cuda_send_packet_to_host(s, obuf, olen + 3);
         }
         break;
     case CUDA_PACKET:
@@ -671,7 +773,7 @@ static void cuda_reset(DeviceState *dev)
 
     s->b = 0;
     s->a = 0;
-    s->dirb = 0;
+    s->dirb = 0xff;
     s->dira = 0;
     s->sr = 0;
     s->acr = 0;
@@ -688,8 +790,8 @@ static void cuda_reset(DeviceState *dev)
     s->timers[0].latch = 0xffff;
     set_counter(s, &s->timers[0], 0xffff);
 
-    s->timers[1].latch = 0;
-    set_counter(s, &s->timers[1], 0xffff);
+    s->timers[1].latch = 0xffff;
+    //set_counter(s, &s->timers[1], 0xffff);
 }
 
 static void cuda_realizefn(DeviceState *dev, Error **errp)
@@ -699,7 +801,13 @@ static void cuda_realizefn(DeviceState *dev, Error **errp)
 
     s->timers[0].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, cuda_timer1, s);
     s->timers[0].frequency = s->frequency;
-    s->timers[1].frequency = s->frequency;
+    s->timers[1].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, cuda_timer2, s);
+    s->timers[1].frequency = (SCALE_US * 6000) / 4700;
+
+    s->hack_timers[CUDA_TIMER_SET_SR] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                                     cuda_set_sr, s);
+    s->hack_timers[CUDA_TIMER_UNSET_TREQ] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                                         cuda_unset_treq, s);
 
     qemu_get_timedate(&tm, 0);
     s->tick_offset = (uint32_t)mktimegm(&tm) + RTC_OFFSET;

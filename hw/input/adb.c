@@ -84,7 +84,7 @@ int adb_request(ADBBusState *s, uint8_t *obuf, const uint8_t *buf, int len)
             return adc->devreq(d, obuf, buf, len);
         }
     }
-    return ADB_RET_NOTPRESENT;
+    return 0; //ADB_RET_NOTPRESENT;
 }
 
 /* XXX: move that to cuda ? */
