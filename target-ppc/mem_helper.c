@@ -293,6 +293,7 @@ void helper_tbegin(CPUPPCState *env)
 }
 
 void qmp_stop(void *p);
+extern bool should_decr;
 void helper_print_load(CPUPPCState *env, target_ulong ea, target_ulong val)
 {
     static bool should_dump = false;
@@ -308,6 +309,11 @@ void helper_print_load(CPUPPCState *env, target_ulong ea, target_ulong val)
 
     if (ea == 0xffc00344) {
         should_print = true;
+        should_decr = false;
+    }
+
+    if (!should_decr) {
+        //tb_flush(env);
     }
 
     if (!should_print) goto out;

@@ -692,6 +692,7 @@ void ppc_cpu_do_interrupt(CPUState *cs)
     powerpc_excp(cpu, env->excp_model, cs->exception_index);
 }
 
+bool should_decr = true;
 static void ppc_hw_interrupt(CPUPPCState *env)
 {
     PowerPCCPU *cpu = ppc_env_get_cpu(env);
@@ -778,6 +779,7 @@ static void ppc_hw_interrupt(CPUPPCState *env)
             if (ppc_decr_clear_on_delivery(env)) {
                 env->pending_interrupts &= ~(1 << PPC_INTERRUPT_DECR);
             }
+if(should_decr)
             powerpc_excp(cpu, env->excp_model, POWERPC_EXCP_DECR);
             return;
         }
