@@ -2842,7 +2842,7 @@ static void glue(gen_, name##u)(DisasContext *ctx)                              
         gen_addr_imm_index(ctx, EA, 0);                                       \
     gen_qemu_##ldop(ctx, cpu_gpr[rD(ctx->opcode)], EA);                       \
     gen_update_nip(ctx, ctx->nip);					      \
-    if(1)gen_helper_print_load(cpu_env, cpu_gpr[rA(ctx->opcode)], cpu_gpr[rD(ctx->opcode)]);	\
+    if(0)gen_helper_print_load(cpu_env, cpu_gpr[rA(ctx->opcode)], cpu_gpr[rD(ctx->opcode)]);	\
     tcg_gen_mov_tl(cpu_gpr[rA(ctx->opcode)], EA);                             \
     tcg_temp_free(EA);                                                        \
 }
