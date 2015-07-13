@@ -1018,7 +1018,15 @@ static int ram_find_and_save_block(QEMUFile *f, bool last_stage,
 
     while (true) {
         mr = block->mr;
-        offset = migration_bitmap_find_and_reset_dirty(mr, offset);
+
+        if (block->flags & RAM_PREALLOC) {
+            /* We don't migrate blocks spawned from existing ptrs */
+            offset = block->used_length;
+            pages = 0;
+        } else {
+            offset = migration_bitmap_find_and_reset_dirty(mr, offset);
+        }
+
         if (complete_round && block == last_seen_block &&
             offset >= last_offset) {
             break;
@@ -1094,8 +1102,13 @@ uint64_t ram_bytes_total(void)
     uint64_t total = 0;
 
     rcu_read_lock();
-    QLIST_FOREACH_RCU(block, &ram_list.blocks, next)
+    QLIST_FOREACH_RCU(block, &ram_list.blocks, next) {
+        if (block->flags & RAM_PREALLOC) {
+            continue;
+        }
+
         total += block->used_length;
+    }
     rcu_read_unlock();
     return total;
 }
@@ -1214,6 +1227,10 @@ static int ram_save_setup(QEMUFile *f, void *opaque)
     qemu_put_be64(f, ram_bytes_total() | RAM_SAVE_FLAG_MEM_SIZE);
 
     QLIST_FOREACH_RCU(block, &ram_list.blocks, next) {
+        if (block->flags & RAM_PREALLOC) {
+            /* We don't migrate blocks spawned from existing ptrs */
+            continue;
+        }
         qemu_put_byte(f, strlen(block->idstr));
         qemu_put_buffer(f, (uint8_t *)block->idstr, strlen(block->idstr));
         qemu_put_be64(f, block->used_length);

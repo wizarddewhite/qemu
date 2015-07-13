@@ -208,7 +208,9 @@ static int vfio_dma_unmap(VFIOContainer *container,
     return 0;
 }
 
-static int vfio_dma_map(VFIOContainer *container, hwaddr iova,
+int vfio_dma_map(VFIOContainer *container, hwaddr iova,
+                        ram_addr_t size, void *vaddr, bool readonly);
+int vfio_dma_map(VFIOContainer *container, hwaddr iova,
                         ram_addr_t size, void *vaddr, bool readonly)
 {
     struct vfio_iommu_type1_dma_map map = {
@@ -519,6 +521,7 @@ int vfio_mmap_region(Object *obj, VFIORegion *region,
 
         memory_region_init_ram_ptr(submem, obj, name, size, *map);
         memory_region_set_skip_dump(submem);
+        vmstate_register_ram_global(submem);
     } else {
 empty_region:
         /* Create a zero sized sub-region to make cleanup easy. */

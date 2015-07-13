@@ -105,13 +105,14 @@ class MigrationFile(object):
         self.file.close()
 
 class RamSection(object):
-    RAM_SAVE_FLAG_COMPRESS = 0x02
-    RAM_SAVE_FLAG_MEM_SIZE = 0x04
-    RAM_SAVE_FLAG_PAGE     = 0x08
-    RAM_SAVE_FLAG_EOS      = 0x10
-    RAM_SAVE_FLAG_CONTINUE = 0x20
-    RAM_SAVE_FLAG_XBZRLE   = 0x40
-    RAM_SAVE_FLAG_HOOK     = 0x80
+    RAM_SAVE_FLAG_COMPRESS      = 0x02
+    RAM_SAVE_FLAG_MEM_SIZE      = 0x04
+    RAM_SAVE_FLAG_PAGE          = 0x08
+    RAM_SAVE_FLAG_EOS           = 0x10
+    RAM_SAVE_FLAG_CONTINUE      = 0x20
+    RAM_SAVE_FLAG_XBZRLE        = 0x40
+    RAM_SAVE_FLAG_HOOK          = 0x80
+    RAM_SAVE_FLAG_COMPRESS_PAGE = 0x100
 
     def __init__(self, file, version_id, ramargs, section_key):
         if version_id != 4:
@@ -183,6 +184,30 @@ class RamSection(object):
                 if self.dump_memory:
                     self.memory['%s (0x%016x)' % (self.name, addr)] = 'Filled with 0x%02x' % fill_char
                 flags &= ~self.RAM_SAVE_FLAG_COMPRESS
+            elif flags & self.RAM_SAVE_FLAG_COMPRESS_PAGE:
+                if flags & self.RAM_SAVE_FLAG_CONTINUE:
+                    flags &= ~self.RAM_SAVE_FLAG_CONTINUE
+                else:
+                    self.name = self.file.readstr()
+
+                len = self.file.read32()
+                if len < 0 or len > self.TARGET_PAGE_SIZE:
+                    raise Exception("Invalid compressed data length: %d" % len)
+
+                if self.write_memory or self.dump_memory:
+                    data = self.file.readvar(size = len)
+                    # XXX decompress
+                else: # Just skip RAM data
+                    self.file.file.seek(len, 1)
+
+                if self.write_memory:
+                    self.files[self.name].seek(addr, os.SEEK_SET)
+                    self.files[self.name].write(data)
+                if self.dump_memory:
+                    hexdata = " ".join("{0:02x}".format(ord(c)) for c in data)
+                    self.memory['%s (0x%016x)' % (self.name, addr)] = hexdata
+
+                flags &= ~self.RAM_SAVE_FLAG_COMPRESS_PAGE
             elif flags & self.RAM_SAVE_FLAG_PAGE:
                 if flags & self.RAM_SAVE_FLAG_CONTINUE:
                     flags &= ~self.RAM_SAVE_FLAG_CONTINUE
@@ -509,25 +534,29 @@ class MigrationDump(object):
         ramargs['write_memory'] = write_memory
         self.section_classes[('ram',0)][1] = ramargs
 
-        while True:
-            section_type = file.read8()
-            if section_type == self.QEMU_VM_EOF:
-                break
-            elif section_type == self.QEMU_VM_SECTION_START or section_type == self.QEMU_VM_SECTION_FULL:
-                section_id = file.read32()
-                name = file.readstr()
-                instance_id = file.read32()
-                version_id = file.read32()
-                section_key = (name, instance_id)
-                classdesc = self.section_classes[section_key]
-                section = classdesc[0](file, version_id, classdesc[1], section_key)
-                self.sections[section_id] = section
-                section.read()
-            elif section_type == self.QEMU_VM_SECTION_PART or section_type == self.QEMU_VM_SECTION_END:
-                section_id = file.read32()
-                self.sections[section_id].read()
-            else:
-                raise Exception("Unknown section type: %d" % section_type)
+        try:
+            while True:
+                section_type = file.read8()
+                if section_type == self.QEMU_VM_EOF:
+                    break
+                elif section_type == self.QEMU_VM_SECTION_START or section_type == self.QEMU_VM_SECTION_FULL:
+                    section_id = file.read32()
+                    name = file.readstr()
+                    instance_id = file.read32()
+                    version_id = file.read32()
+                    section_key = (name, instance_id)
+                    classdesc = self.section_classes[section_key]
+                    section = classdesc[0](file, version_id, classdesc[1], section_key)
+                    self.sections[section_id] = section
+                    section.read()
+                elif section_type == self.QEMU_VM_SECTION_PART or section_type == self.QEMU_VM_SECTION_END:
+                    section_id = file.read32()
+                    self.sections[section_id].read()
+                else:
+                    raise Exception("Unknown section type: %d" % section_type)
+        except:
+            print "Exception happened at offset 0x%x" % file.tell()
+            raise
         file.close()
 
     def load_vmsd_json(self, file):
