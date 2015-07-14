@@ -483,7 +483,7 @@ struct i40e_virtchnl_queue_pair_info {
 struct i40e_virtchnl_vsi_queue_config_info {
     uint16_t vsi_id;
     uint16_t num_queue_pairs;
-    struct i40e_virtchnl_queue_pair_info qpair[3];
+    struct i40e_virtchnl_queue_pair_info qpair[17];
 };
 
 /* I40E_VIRTCHNL_OP_CONFIG_IRQ_MAP
@@ -504,7 +504,7 @@ struct i40e_virtchnl_vector_map {
 
 struct i40e_virtchnl_irq_map_info {
     uint16_t num_vectors;
-    struct i40e_virtchnl_vector_map vecmap[4];
+    struct i40e_virtchnl_vector_map vecmap[17];
 };
 
 /* I40E_VIRTCHNL_OP_ENABLE_QUEUES
@@ -542,7 +542,7 @@ struct i40e_virtchnl_ether_addr {
 struct i40e_virtchnl_ether_addr_list {
     uint16_t vsi_id;
     uint16_t num_elements;
-    struct i40e_virtchnl_ether_addr list[2];
+    struct i40e_virtchnl_ether_addr list[32];
 };
 
 /* I40E_VIRTCHNL_OP_ADD_VLAN

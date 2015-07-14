@@ -60,6 +60,9 @@ static const int debug_i40evf = 0;
         } \
     } while (0)
 
+void vfio_enable_msi(VFIOPCIDevice *vdev);
+void vfio_enable_msix(VFIOPCIDevice *vdev);
+
 static const char *vfio_i40evf_v_opcode_name(int reg)
 {
     static char unk[] = "Unknown v_opcode 0x00000000";
@@ -781,25 +784,19 @@ static int vfio_i40e_record_atq_cmd(VFIOI40EDevice *vdev,
 
     switch (desc->cookie_high) {
     case I40E_VIRTCHNL_OP_CONFIG_IRQ_MAP: {
-        struct i40e_virtchnl_irq_map_info *mydata = (void*)data;
-        pci_dma_read(pdev, data_addr, data, desc->datalen);
-        /* XXX make dynamic */
-        vdev->irq_map = *mydata;
+        pci_dma_read(pdev, data_addr, &vdev->irq_map,
+                     MIN(desc->datalen, sizeof(vdev->irq_map)));
         break;
     }
     case I40E_VIRTCHNL_OP_CONFIG_VSI_QUEUES: {
-        struct i40e_virtchnl_vsi_queue_config_info *mydata = (void*)data;
-        pci_dma_read(pdev, data_addr, data, desc->datalen);
-        /* XXX make dynamic */
-        vdev->vsi_config = *mydata;
+        pci_dma_read(pdev, data_addr, &vdev->vsi_config,
+                     MIN(desc->datalen, sizeof(vdev->vsi_config)));
         break;
     }
     case I40E_VIRTCHNL_OP_ADD_ETHER_ADDRESS: {
-        struct i40e_virtchnl_ether_addr_list *mydata = (void*)data;
         if (!vdev->addr.vsi_id) {
-            pci_dma_read(pdev, data_addr, data, desc->datalen);
-            /* XXX make dynamic */
-            vdev->addr = *mydata;
+            pci_dma_read(pdev, data_addr, &vdev->addr,
+                         MIN(desc->datalen, sizeof(vdev->addr)));
         }
         break;
     }
@@ -1161,10 +1158,41 @@ static SaveVMHandlers savevm_handlers = {
     .is_active = vfio_i40evf_is_active,
 };
 
-int vfio_dma_map(VFIOContainer *container, hwaddr iova, ram_addr_t size,
-                 void *vaddr, bool readonly);
-void vfio_enable_msi(VFIOPCIDevice *vdev);
-void vfio_enable_msix(VFIOPCIDevice *vdev);
+static uint16_t irq_map_size(struct i40e_virtchnl_irq_map_info *map)
+{
+    uint16_t size = sizeof(*map);
+
+    /* Remove all optional array items from the size */
+    size -= sizeof(map->vecmap);
+    /* And add the ones actually in use again */
+    size += sizeof(map->vecmap[0]) * (map->num_vectors + 1);
+
+    return size;
+}
+
+static uint16_t ether_list_size(struct i40e_virtchnl_ether_addr_list *list)
+{
+    uint16_t size = sizeof(*list);
+
+    /* Remove all optional array items from the size */
+    size -= sizeof(list->list);
+    /* And add the ones actually in use again */
+    size += sizeof(list->list[0]) * (list->num_elements + 1);
+
+    return size;
+}
+
+static uint16_t vsi_config_size(struct i40e_virtchnl_vsi_queue_config_info *vsi)
+{
+    uint16_t size = sizeof(*vsi);
+
+    /* Remove all optional array items from the size */
+    size -= sizeof(vsi->qpair);
+    /* And add the ones actually in use again */
+    size += sizeof(vsi->qpair[0]) * (vsi->num_queue_pairs + 1);
+
+    return size;
+}
 
 static int vfio_i40evf_load(void *opaque, int version_id)
 {
@@ -1182,12 +1210,6 @@ static int vfio_i40evf_load(void *opaque, int version_id)
     };
     I40eAdminQueueDescriptor resp;
     int i, cmd;
-
-#if 0
-    /* Map VFIO region */
-    vfio_dma_map(vdev->parent_obj.vbasedev.group->container, I40E_AQ_LOCATION,
-                 64 * 1024, vdev->admin_queue, false);
-#endif
 
     /* Restore config space */
     cmd = pdev->config_read(pdev, PCI_COMMAND, 2);
@@ -1247,10 +1269,9 @@ static int vfio_i40evf_load(void *opaque, int version_id)
 
     /* Restore VF configuration */
     {
-        volatile struct i40e_virtchnl_irq_map_info *mydata = data;
-        *mydata = vdev->irq_map;
         desc.cookie_high = I40E_VIRTCHNL_OP_CONFIG_IRQ_MAP;
-        desc.datalen = sizeof(*mydata);
+        desc.datalen = MIN(irq_map_size(&vdev->irq_map), sizeof(vdev->irq_map));
+        memcpy(data, &vdev->irq_map, desc.datalen);
         vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ IRQ MAP");
         vfio_i40e_atq_send(vdev, &desc, &resp);
         vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ IRQ MAP response");
@@ -1259,10 +1280,9 @@ static int vfio_i40evf_load(void *opaque, int version_id)
     }
 
     {
-        volatile struct i40e_virtchnl_ether_addr_list *mydata = data;
-        *mydata = vdev->addr;
         desc.cookie_high = I40E_VIRTCHNL_OP_DEL_ETHER_ADDRESS;
-        desc.datalen = sizeof(*mydata);
+        desc.datalen = MIN(ether_list_size(&vdev->addr), sizeof(vdev->addr));
+        memcpy(data, &vdev->addr, desc.datalen);
         vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ DEL ETHER ADDRESS");
         vfio_i40e_atq_send(vdev, &desc, &resp);
         vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ DEL ETHER ADDRESS response");
@@ -1271,10 +1291,9 @@ static int vfio_i40evf_load(void *opaque, int version_id)
     }
 
     {
-        volatile struct i40e_virtchnl_ether_addr_list *mydata = data;
-        *mydata = vdev->addr;
         desc.cookie_high = I40E_VIRTCHNL_OP_ADD_ETHER_ADDRESS;
-        desc.datalen = sizeof(*mydata);
+        desc.datalen = MIN(ether_list_size(&vdev->addr), sizeof(vdev->addr));
+        memcpy(data, &vdev->addr, desc.datalen);
         vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ ETHER ADDRESS");
         vfio_i40e_atq_send(vdev, &desc, &resp);
         vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ ETHER ADDRESS response");
@@ -1283,10 +1302,10 @@ static int vfio_i40evf_load(void *opaque, int version_id)
     }
 
     {
-        volatile struct i40e_virtchnl_vsi_queue_config_info *mydata = data;
-        *mydata = vdev->vsi_config;
         desc.cookie_high = I40E_VIRTCHNL_OP_CONFIG_VSI_QUEUES;
-        desc.datalen = sizeof(*mydata);
+        desc.datalen = MIN(vsi_config_size(&vdev->vsi_config),
+                           sizeof(vdev->vsi_config));
+        memcpy(data, &vdev->vsi_config, desc.datalen);
         vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ VSI QUEUES");
         vfio_i40e_atq_send(vdev, &desc, &resp);
         vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ VSI QUEUES response");
