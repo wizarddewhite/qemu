@@ -45,7 +45,7 @@
 #include "hw/vfio/pci.h"
 #include "hw/vfio/i40evf.h"
 
-#define DEBUG_I40EVF
+// #define DEBUG_I40EVF
 
 #ifdef DEBUG_I40EVF
 static const int debug_i40evf = 1;
@@ -412,6 +412,84 @@ static void vfio_i40e_aq_map(VFIOI40EDevice *vdev)
     vfio_i40evf_w32(vdev, I40E_VF_ARQT1, 1);
 }
 
+/*
+ * Different VFs have different VSI IDs. Since the guest has no awareness
+ * that it's running on a different host now and thus may have a different
+ * vsi id, let's dynamically patch its admin queue requests to expose the
+ * one the host expects
+ */
+static void vfio_i40evf_atq_fixup_vsi_id(VFIOI40EDevice *vdev,
+                                         volatile I40eAdminQueueDescriptor *desc)
+{
+    PCIDevice *pdev = PCI_DEVICE(vdev);
+    void *data = vdev->admin_queue +
+                 (I40E_AQ_LOCATION_ATQ_DATA - I40E_AQ_LOCATION);
+    uint64_t data_addr;
+    int i;
+
+    if (!desc->datalen || (desc->opcode != I40E_AQC_OPC_SEND_MSG_TO_PF)) {
+        return;
+    }
+
+    data_addr = desc->params.external.addr_high;
+    data_addr <<= 32;
+    data_addr |= desc->params.external.addr_low;
+
+    switch (desc->cookie_high) {
+    case I40E_VIRTCHNL_OP_CONFIG_IRQ_MAP:
+    case I40E_VIRTCHNL_OP_CONFIG_VSI_QUEUES:
+    case I40E_VIRTCHNL_OP_ADD_ETHER_ADDRESS:
+    case I40E_VIRTCHNL_OP_DEL_ETHER_ADDRESS:
+    case I40E_VIRTCHNL_OP_GET_STATS:
+    case I40E_VIRTCHNL_OP_ENABLE_QUEUES:
+    case I40E_VIRTCHNL_OP_DISABLE_QUEUES:
+        if (data_addr == I40E_AQ_LOCATION_ATQ_DATA) {
+            /* Commands come from us, no need to copy */
+            break;
+        }
+
+        pci_dma_read(pdev, data_addr, data, desc->datalen);
+        desc->params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32;
+        desc->params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA;
+        break;
+    }
+
+    switch (desc->cookie_high) {
+    case I40E_VIRTCHNL_OP_CONFIG_IRQ_MAP: {
+        struct i40e_virtchnl_irq_map_info *mydata = (void*)data;
+
+        for (i = 0; i < MIN(mydata->num_vectors, 16); i++) {
+            DPRINTF(" CONFIG_IRQ_MAP: Setting VSI ID of vec[%d] to %#x", i,
+                    vdev->vsi_id);
+            mydata->vecmap[i].vsi_id = vdev->vsi_id;
+        }
+        break;
+    }
+    case I40E_VIRTCHNL_OP_CONFIG_VSI_QUEUES: {
+        struct i40e_virtchnl_vsi_queue_config_info *mydata = (void*)data;
+        mydata->vsi_id = vdev->vsi_id;
+        for (i = 0; i < MIN(mydata->num_queue_pairs, 16); i++) {
+            mydata->qpair[i].txq.vsi_id = vdev->vsi_id;
+            mydata->qpair[i].rxq.vsi_id = vdev->vsi_id;
+        }
+        break;
+    }
+    case I40E_VIRTCHNL_OP_ADD_ETHER_ADDRESS:
+    case I40E_VIRTCHNL_OP_DEL_ETHER_ADDRESS: {
+        struct i40e_virtchnl_ether_addr_list *mydata = (void*)data;
+        mydata->vsi_id = vdev->vsi_id;
+        break;
+    }
+    case I40E_VIRTCHNL_OP_GET_STATS:
+    case I40E_VIRTCHNL_OP_ENABLE_QUEUES:
+    case I40E_VIRTCHNL_OP_DISABLE_QUEUES: {
+        struct i40e_virtchnl_queue_select *mydata = (void*)data;
+        mydata->vsi_id = vdev->vsi_id;
+        break;
+    }
+    }
+}
+
 /* Returns the Admin Receive Queue Base Address as configured by the guest */
 static hwaddr vfio_i40e_get_arqba(VFIOI40EDevice *vdev)
 {
@@ -470,10 +548,14 @@ static int vfio_i40e_atq_send_nowait(VFIOI40EDevice *vdev,
     volatile I40eAdminQueueDescriptor *atq_cur = &atq[atqt];
 
     DPRINTF(" hware queue index = %#x", atqt);
+
     /* Copy command into our own queue buffer */
     *atq_cur = *req;
 
-    /* Move the tail one ahead */
+    /* Change the vsi id on the fly if we have to */
+    vfio_i40evf_atq_fixup_vsi_id(vdev, atq_cur);
+
+    /* Move the tail one ahead and thus tell the card we have a cmd */
     atqt = (atqt + 1) % vdev->aq_len;
     vfio_i40evf_w32(vdev, I40E_VF_ATQT1, atqt);
 
@@ -669,9 +751,9 @@ static void vfio_i40e_print_aq_cmd(PCIDevice *pdev,
 }
 
 static int vfio_i40e_record_atq_cmd(VFIOI40EDevice *vdev,
+                                    PCIDevice *pdev,
                                     I40eAdminQueueDescriptor *desc)
 {
-    PCIDevice *pdev = PCI_DEVICE(vdev);
     unsigned char data[desc->datalen];
     uint64_t data_addr;
 
@@ -752,7 +834,7 @@ static void vfio_i40e_atq_process_one(VFIOI40EDevice *vdev, int index)
         g_free(name);
     }
 
-    if (vfio_i40e_record_atq_cmd(vdev, &desc)) {
+    if (vfio_i40e_record_atq_cmd(vdev, pdev, &desc)) {
         /* Command is already handled */
         return;
     }
@@ -830,8 +912,6 @@ static void vfio_i40e_arq_recv(VFIOI40EDevice *vdev,
 
     /* Move the head one ahead */
     vfio_i40e_aq_inc(vdev, I40E_VF_ARQH1);
-
-    /* XXX do we need to copy back for the device? */
 }
 
 /* Process one Admin Receive Queue Command from the device */
@@ -1114,7 +1194,9 @@ static int vfio_i40evf_load(void *opaque, int version_id)
     cmd |= (PCI_COMMAND_IO | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER );
     pdev->config_write(pdev, PCI_COMMAND, cmd, 2);
 
-    vfio_i40evf_vw32(vdev, I40E_VFQF_HENA(1), 0x80000000); // XXX no RX otherwise?
+    /* XXX Hack to make RX work. Somehow the hashing is broken. Still need to
+           figure out why. Disable filtering for now. */
+    vfio_i40evf_vw32(vdev, I40E_VFQF_HENA(1), 0x80000000);
 
     /* Restore Registers */
     for (i = 0; i < (ARRAY_SIZE(vfio_i40evf_migration_reg_list)); i++) {
@@ -1394,27 +1476,28 @@ static void vfio_i40evf_instance_init(Object *obj)
     DPRINTF("");
 }
 
-static int (*vfio_pci_init)(PCIDevice *dev);
-
 static int vfio_i40evf_initfn(PCIDevice *dev)
 {
+    VFIOI40EDeviceClass *vk = VFIO_I40EVF_GET_CLASS(dev);
     VFIOI40EDevice *vdev = VFIO_I40EVF(dev);
     VFIOPCIDevice *vpdev = VFIO_PCI(dev);
     VFIOBAR *bar = &vpdev->bars[0];
 
-    vfio_pci_init(dev);
+    vk->parent_init(dev);
     DPRINTF("");
     vdev->aq_len = 32;
 
-    /* XXX debug MMIO access */
-if (0) {
-    memory_region_init_io(&vdev->mmio_mem, OBJECT(dev),
-                          &vfio_i40evf_mmio_mem_region_ops,
-                          vdev, "i40evf config", 64 * 1024);
-    memory_region_add_subregion_overlap(&bar->region.mem, 0, &vdev->mmio_mem, 29);
-}
+    /* Trap and show every MMIO access */
+    if (debug_i40evf) {
+        memory_region_init_io(&vdev->mmio_mem, OBJECT(dev),
+                              &vfio_i40evf_mmio_mem_region_ops,
+                              vdev, "i40evf config", 64 * 1024);
+        memory_region_add_subregion_overlap(&bar->region.mem, 0,
+                                            &vdev->mmio_mem, 29);
+    }
 
-    /* Override the Admin Queue configuration */
+    /* Override the Admin Queue configuration so that we can inject our
+     * own handlers */
     memory_region_init_io(&vdev->aq_mmio_mem, OBJECT(dev),
                           &vfio_i40evf_aq_mmio_mem_region_ops,
                           vdev, "i40evf AQ config",
@@ -1429,10 +1512,11 @@ static void vfio_i40evf_dev_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
+    VFIOI40EDeviceClass *vk = VFIO_I40EVF_CLASS(klass);
 
     dc->vmsd = &vfio_i40evf_vmstate;
     dc->desc = "VFIO-based i40evf card";
-    vfio_pci_init = k->init; /* XXX */
+    vk->parent_init = k->init;
     k->init = vfio_i40evf_initfn;
 }
 

@@ -22,6 +22,10 @@
 #define TYPE_VFIO_I40EVF "vfio-i40e"
 #define VFIO_I40EVF(obj) \
      OBJECT_CHECK(VFIOI40EDevice, (obj), TYPE_VFIO_I40EVF)
+#define VFIO_I40EVF_CLASS(klass) \
+     OBJECT_CLASS_CHECK(VFIOI40EDeviceClass, (klass), TYPE_VFIO_I40EVF)
+#define VFIO_I40EVF_GET_CLASS(obj) \
+     OBJECT_GET_CLASS(VFIOI40EDeviceClass, (obj), TYPE_VFIO_I40EVF)
 
 #define VFIO_PCI(obj) \
      OBJECT_CHECK(VFIOPCIDevice, (obj), "vfio-pci")
@@ -681,3 +685,7 @@ typedef struct VFIOI40EDevice {
     struct i40e_virtchnl_queue_select queue_select;
 } VFIOI40EDevice;
 
+typedef struct VFIOI40EDeviceClass {
+    PCIDeviceClass parent_class;
+    int (*parent_init)(PCIDevice *dev);
+} VFIOI40EDeviceClass;
