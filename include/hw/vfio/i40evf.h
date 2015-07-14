@@ -664,7 +664,6 @@ typedef struct VFIOI40EDevice {
     struct VFIOPCIDevice parent_obj;
     uint32_t regs[(64 * 1024) / 4];
     bool arq_active;
-    uint32_t foo;
     MemoryRegion mmio_mem;
     MemoryRegion aq_mmio_mem;
     MemoryRegion aq_data_mem;
@@ -672,6 +671,8 @@ typedef struct VFIOI40EDevice {
     int aq_len;
     int arq_last;
     int arq_ignore; /* nr of arq elements to drop */
+    bool arq_fetch_vsi_id;
+    int vsi_id;
 
     /* Intercepted config from guest */
     struct i40e_virtchnl_irq_map_info irq_map;

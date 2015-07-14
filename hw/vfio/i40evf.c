@@ -45,7 +45,7 @@
 #include "hw/vfio/pci.h"
 #include "hw/vfio/i40evf.h"
 
-//#define DEBUG_I40EVF
+#define DEBUG_I40EVF
 
 #ifdef DEBUG_I40EVF
 static const int debug_i40evf = 1;
@@ -56,7 +56,7 @@ static const int debug_i40evf = 0;
 #undef DPRINTF /* from vfio-common */
 #define DPRINTF(fmt, ...) do { \
         if (debug_i40evf) { \
-            printf(fmt , ## __VA_ARGS__); \
+            printf("i40evf: %38s:%04d" fmt "\n" , __func__, __LINE__, ## __VA_ARGS__); \
         } \
     } while (0)
 
@@ -328,7 +328,7 @@ static uint32_t vfio_i40evf_r32(VFIOI40EDevice *vdev, int reg)
     volatile uint32_t *p = bar->region.mmap + reg;
 
     val = *p;
-    DPRINTF("XXX %s:%d -> reg=%s val=%#lx\n", __func__, __LINE__, vfio_i40evf_reg_name(reg), val);
+    DPRINTF(" -> reg=%s val=%#lx", vfio_i40evf_reg_name(reg), val);
 
     return val;
 }
@@ -341,21 +341,21 @@ static void vfio_i40evf_w32(VFIOI40EDevice *vdev, int reg, uint32_t val)
     volatile uint32_t *p = bar->region.mmap + reg;
 
     *p = val;
-    DPRINTF("XXX %s:%d -> reg=%s val=%#x\n", __func__, __LINE__, vfio_i40evf_reg_name(reg), val);
+    DPRINTF(" -> reg=%s val=%#x", vfio_i40evf_reg_name(reg), val);
 }
 
 /* Read a virtual (guest visible) register */
 static uint32_t vfio_i40evf_vr32(VFIOI40EDevice *vdev, int reg)
 {
     uint64_t val = vdev->regs[reg / 4];
-    DPRINTF("XXX %s:%d -> reg=%s val=%#lx\n", __func__, __LINE__, vfio_i40evf_reg_name(reg), val);
+    DPRINTF(" -> reg=%s val=%#lx", vfio_i40evf_reg_name(reg), val);
     return val;
 }
 
 /* Write a virtual (guest visible) register */
 static void vfio_i40evf_vw32(VFIOI40EDevice *vdev, int reg, uint32_t val)
 {
-    DPRINTF("XXX %s:%d -> reg=%s val=%#x\n", __func__, __LINE__, vfio_i40evf_reg_name(reg), val);
+    DPRINTF(" -> reg=%s val=%#x", vfio_i40evf_reg_name(reg), val);
     vdev->regs[reg / 4] = val;
 }
 
@@ -461,6 +461,25 @@ static void vfio_i40e_aq_inc(VFIOI40EDevice *vdev, int reg)
 }
 
 /* Send one Admin Transmit Queue Command to the device */
+static int vfio_i40e_atq_send_nowait(VFIOI40EDevice *vdev,
+                                     I40eAdminQueueDescriptor *req)
+{
+    int atqt = vfio_i40evf_r32(vdev, I40E_VF_ATQT1);
+    int atq_offset = (I40E_AQ_LOCATION_ATQ - I40E_AQ_LOCATION);
+    volatile I40eAdminQueueDescriptor *atq = vdev->admin_queue + atq_offset;
+    volatile I40eAdminQueueDescriptor *atq_cur = &atq[atqt];
+
+    DPRINTF(" hware queue index = %#x", atqt);
+    /* Copy command into our own queue buffer */
+    *atq_cur = *req;
+
+    /* Move the tail one ahead */
+    atqt = (atqt + 1) % vdev->aq_len;
+    vfio_i40evf_w32(vdev, I40E_VF_ATQT1, atqt);
+
+    return atqt;
+}
+
 static void vfio_i40e_atq_send(VFIOI40EDevice *vdev,
                                I40eAdminQueueDescriptor *req,
                                I40eAdminQueueDescriptor *res)
@@ -470,13 +489,7 @@ static void vfio_i40e_atq_send(VFIOI40EDevice *vdev,
     volatile I40eAdminQueueDescriptor *atq = vdev->admin_queue + atq_offset;
     volatile I40eAdminQueueDescriptor *atq_cur = &atq[atqt];
 
-DPRINTF("XXX %s:%d hware queue index = %#x\n", __func__, __LINE__, atqt);
-    /* Copy command into our own queue buffer */
-    *atq_cur = *req;
-
-    /* Move the tail one ahead */
-    atqt = (atqt + 1) % vdev->aq_len;
-    vfio_i40evf_w32(vdev, I40E_VF_ATQT1, atqt);
+    atqt = vfio_i40e_atq_send_nowait(vdev, req);
 
     /* Wait for completion */
     while(vfio_i40evf_r32(vdev, I40E_VF_ATQH1) != atqt) usleep(5000);
@@ -507,59 +520,59 @@ static void vfio_i40e_print_aq_cmd(PCIDevice *pdev,
 
     pci_dma_read(pdev, data_addr, data, req->datalen);
 
-    printf(" %s\n", name);
-    printf(" |- opcode    = %#x\n", req->opcode);
-    printf(" |- length    = %#x\n", req->datalen);
-    printf(" |- flags     = %#x\n", req->flags);
-    printf(" |- cookie hi = %#x (%s)\n", req->cookie_high, opname);
-    printf(" |- cookie lo = %#x\n", req->cookie_low);
-    printf(" |- retval    = %#x\n", req->retval);
-    printf(" `- data addr = %#"PRIx64"\n", data_addr);
+    DPRINTF(" %s", name);
+    DPRINTF(" |- opcode    = %#x", req->opcode);
+    DPRINTF(" |- length    = %#x", req->datalen);
+    DPRINTF(" |- flags     = %#x", req->flags);
+    DPRINTF(" |- cookie hi = %#x (%s)", req->cookie_high, opname);
+    DPRINTF(" |- cookie lo = %#x", req->cookie_low);
+    DPRINTF(" |- retval    = %#x", req->retval);
+    DPRINTF(" `- data addr = %#"PRIx64"", data_addr);
 
     if (req->datalen && (req->opcode == I40E_AQC_OPC_SEND_MSG_TO_PF)) {
         switch (req->cookie_high) { /* v_opcode */
         case I40E_VIRTCHNL_OP_VERSION: {
             struct i40e_virtchnl_version_info *verinfo = (void*)data;
-            printf("    |- major = %#x\n", verinfo->major);
-            printf("    `- minor = %#x\n", verinfo->minor);
+            DPRINTF("    |- major = %#x", verinfo->major);
+            DPRINTF("    `- minor = %#x", verinfo->minor);
             break;
         }
         case I40E_VIRTCHNL_OP_CONFIG_VSI_QUEUES: {
             struct i40e_virtchnl_vsi_queue_config_info *mydata = (void*)data;
-            printf("    |- num_queue_pairs = %#x\n", mydata->num_queue_pairs);
+            DPRINTF("    |- num_queue_pairs = %#x", mydata->num_queue_pairs);
             for (i = 0; i < mydata->num_queue_pairs; i++) {
                 struct i40e_virtchnl_queue_pair_info *qp = &mydata->qpair[i];
-                printf("    |    |- txq.vsi_id           = %#x\n", qp->txq.vsi_id);
-                printf("    |    |- txq.queue_id         = %#x\n", qp->txq.queue_id);
-                printf("    |    |- txq.ring_len         = %#x\n", qp->txq.ring_len);
-                printf("    |    |- txq.headwb_enabled   = %#x\n", qp->txq.headwb_enabled);
-                printf("    |    |- txq.dma_ring_addr    = %#"PRIx64"\n", qp->txq.dma_ring_addr);
-                printf("    |    |- txq.dma_headwb_addr  = %#"PRIx64"\n", qp->txq.dma_headwb_addr);
-                printf("    |    |- rxq.vsi_id           = %#x\n", qp->rxq.vsi_id);
-                printf("    |    |- rxq.queue_id         = %#x\n", qp->rxq.queue_id);
-                printf("    |    |- rxq.ring_len         = %#x\n", qp->rxq.ring_len);
-                printf("    |    |- rxq.hdr_size         = %#x\n", qp->rxq.hdr_size);
-                printf("    |    |- rxq.splithdr_enabled = %#x\n", qp->rxq.splithdr_enabled);
-                printf("    |    |- rxq.databuffer_size  = %#x\n", qp->rxq.databuffer_size);
-                printf("    |    |- rxq.max_pkt_size     = %#x\n", qp->rxq.max_pkt_size);
-                printf("    |    |- rxq.dma_ring_addr    = %#"PRIx64"\n", qp->rxq.dma_ring_addr);
-                printf("    |    |- rxq.splithdr_enabled = %#x\n", qp->rxq.splithdr_enabled);
-                printf("    |    `- rxq.rx_split_pos     = %#x\n", qp->rxq.rx_split_pos);
+                DPRINTF("    |    |- txq.vsi_id           = %#x", qp->txq.vsi_id);
+                DPRINTF("    |    |- txq.queue_id         = %#x", qp->txq.queue_id);
+                DPRINTF("    |    |- txq.ring_len         = %#x", qp->txq.ring_len);
+                DPRINTF("    |    |- txq.headwb_enabled   = %#x", qp->txq.headwb_enabled);
+                DPRINTF("    |    |- txq.dma_ring_addr    = %#"PRIx64"", qp->txq.dma_ring_addr);
+                DPRINTF("    |    |- txq.dma_headwb_addr  = %#"PRIx64"", qp->txq.dma_headwb_addr);
+                DPRINTF("    |    |- rxq.vsi_id           = %#x", qp->rxq.vsi_id);
+                DPRINTF("    |    |- rxq.queue_id         = %#x", qp->rxq.queue_id);
+                DPRINTF("    |    |- rxq.ring_len         = %#x", qp->rxq.ring_len);
+                DPRINTF("    |    |- rxq.hdr_size         = %#x", qp->rxq.hdr_size);
+                DPRINTF("    |    |- rxq.splithdr_enabled = %#x", qp->rxq.splithdr_enabled);
+                DPRINTF("    |    |- rxq.databuffer_size  = %#x", qp->rxq.databuffer_size);
+                DPRINTF("    |    |- rxq.max_pkt_size     = %#x", qp->rxq.max_pkt_size);
+                DPRINTF("    |    |- rxq.dma_ring_addr    = %#"PRIx64"", qp->rxq.dma_ring_addr);
+                DPRINTF("    |    |- rxq.splithdr_enabled = %#x", qp->rxq.splithdr_enabled);
+                DPRINTF("    |    `- rxq.rx_split_pos     = %#x", qp->rxq.rx_split_pos);
             }
-            printf("    `- vsi_id          = %#x\n", mydata->vsi_id);
+            DPRINTF("    `- vsi_id          = %#x", mydata->vsi_id);
             break;
         }
         case I40E_VIRTCHNL_OP_CONFIG_IRQ_MAP: {
             struct i40e_virtchnl_irq_map_info *mydata = (void*)data;
-            printf("    |- num_vectors = %#x\n", mydata->num_vectors);
+            DPRINTF("    |- num_vectors = %#x", mydata->num_vectors);
             for (i = 0; i < mydata->num_vectors; i++) {
                 struct i40e_virtchnl_vector_map *map = &mydata->vecmap[i];
-                printf("        |- vsi_id    = %#x\n", map->vsi_id);
-                printf("        |- vector_id = %#x\n", map->vector_id);
-                printf("        |- rxq_map   = %#x\n", map->rxq_map);
-                printf("        |- txq_map   = %#x\n", map->txq_map);
-                printf("        |- rxitr_idx = %#x\n", map->rxitr_idx);
-                printf("        `- txitr_idx = %#x\n", map->txitr_idx);
+                DPRINTF("        |- vsi_id    = %#x", map->vsi_id);
+                DPRINTF("        |- vector_id = %#x", map->vector_id);
+                DPRINTF("        |- rxq_map   = %#x", map->rxq_map);
+                DPRINTF("        |- txq_map   = %#x", map->txq_map);
+                DPRINTF("        |- rxitr_idx = %#x", map->rxitr_idx);
+                DPRINTF("        `- txitr_idx = %#x", map->txitr_idx);
             }
             break;
         }
@@ -567,31 +580,31 @@ static void vfio_i40e_print_aq_cmd(PCIDevice *pdev,
         case I40E_VIRTCHNL_OP_ENABLE_QUEUES:
         case I40E_VIRTCHNL_OP_DISABLE_QUEUES: {
             struct i40e_virtchnl_queue_select *mydata = (void*)data;
-            printf("    |- vsi_id    = %#x\n", mydata->vsi_id);
-            printf("    |- pad       = %#x\n", mydata->pad);
-            printf("    |- rx_queues = %#x\n", mydata->rx_queues);
-            printf("    `- tx_queues = %#x\n", mydata->tx_queues);
+            DPRINTF("    |- vsi_id    = %#x", mydata->vsi_id);
+            DPRINTF("    |- pad       = %#x", mydata->pad);
+            DPRINTF("    |- rx_queues = %#x", mydata->rx_queues);
+            DPRINTF("    `- tx_queues = %#x", mydata->tx_queues);
             break;
         }
         case I40E_VIRTCHNL_OP_ADD_ETHER_ADDRESS:
         case I40E_VIRTCHNL_OP_DEL_ETHER_ADDRESS: {
             struct i40e_virtchnl_ether_addr_list *mydata = (void*)data;
-            printf("    |- num_elements = %#x\n", mydata->num_elements);
+            DPRINTF("    |- num_elements = %#x", mydata->num_elements);
             for (i = 0; i < mydata->num_elements; i++) {
                 struct i40e_virtchnl_ether_addr *addr = &mydata->list[i];
-                printf("    |   `- addr = %02x:%02x:%02x:%02x:%02x:%02x\n",
+                DPRINTF("    |   `- addr = %02x:%02x:%02x:%02x:%02x:%02x",
                     addr->addr[0], addr->addr[1], addr->addr[2], addr->addr[3],
                     addr->addr[4], addr->addr[5]);
             }
-            printf("    `- vsi_id          = %#x\n", mydata->vsi_id);
+            DPRINTF("    `- vsi_id          = %#x", mydata->vsi_id);
             break;
         }
         default:
-            printf("    `- data = ");
+            DPRINTF("    `- data = ");
             for (i = 0; i < req->datalen; i++) {
-                printf("%02x ", (uint8_t)data[i]);
+                DPRINTF("%02x ", (uint8_t)data[i]);
             }
-            printf("\n");
+            DPRINTF("");
             break;
         }
     }
@@ -600,54 +613,54 @@ static void vfio_i40e_print_aq_cmd(PCIDevice *pdev,
         switch (req->cookie_high) { /* v_opcode */
         case I40E_VIRTCHNL_OP_VERSION: {
             struct i40e_virtchnl_version_info *verinfo = (void*)data;
-            printf("    |- major = %#x\n", verinfo->major);
-            printf("    `- minor = %#x\n", verinfo->minor);
+            DPRINTF("    |- major = %#x", verinfo->major);
+            DPRINTF("    `- minor = %#x", verinfo->minor);
             break;
         }
         case I40E_VIRTCHNL_OP_GET_VF_RESOURCES: {
             struct i40e_virtchnl_vf_resource *mydata = (void*)data;
-            printf("    |- num_vsis          = %#x\n", mydata->num_vsis);
+            DPRINTF("    |- num_vsis          = %#x", mydata->num_vsis);
             for (i = 0; i < mydata->num_vsis; i++) {
                 struct i40e_virtchnl_vsi_resource *vsi = &mydata->vsi_res[i];
-                printf("    |   |- vsi_id           = %#x\n", vsi->vsi_id);
-                printf("    |   |- num_queue_pairs  = %#x\n", vsi->num_queue_pairs);
-                printf("    |   |- vsi_type         = %#x\n", vsi->vsi_type);
-                printf("    |   |- qset_handle      = %#x\n", vsi->qset_handle);
-                printf("    |   `- default_mac_addr = %02x:%02x:%02x:%02x:%02x:%02x\n",
+                DPRINTF("    |   |- vsi_id           = %#x", vsi->vsi_id);
+                DPRINTF("    |   |- num_queue_pairs  = %#x", vsi->num_queue_pairs);
+                DPRINTF("    |   |- vsi_type         = %#x", vsi->vsi_type);
+                DPRINTF("    |   |- qset_handle      = %#x", vsi->qset_handle);
+                DPRINTF("    |   `- default_mac_addr = %02x:%02x:%02x:%02x:%02x:%02x",
                     vsi->default_mac_addr[0], vsi->default_mac_addr[1],
                     vsi->default_mac_addr[2], vsi->default_mac_addr[3],
                     vsi->default_mac_addr[4], vsi->default_mac_addr[5]);
             }
-            printf("    |- num_queue_pairs   = %#x\n", mydata->num_queue_pairs);
-            printf("    |- max_vectors       = %#x\n", mydata->max_vectors);
-            printf("    |- max_mtu           = %#x\n", mydata->max_mtu);
-            printf("    |- vf_offload_flags  = %#x\n", mydata->vf_offload_flags);
-            printf("    |- max_fcoe_contexts = %#x\n", mydata->max_fcoe_contexts);
-            printf("    `- max_fcoe_filters  = %#x\n", mydata->max_fcoe_filters);
+            DPRINTF("    |- num_queue_pairs   = %#x", mydata->num_queue_pairs);
+            DPRINTF("    |- max_vectors       = %#x", mydata->max_vectors);
+            DPRINTF("    |- max_mtu           = %#x", mydata->max_mtu);
+            DPRINTF("    |- vf_offload_flags  = %#x", mydata->vf_offload_flags);
+            DPRINTF("    |- max_fcoe_contexts = %#x", mydata->max_fcoe_contexts);
+            DPRINTF("    `- max_fcoe_filters  = %#x", mydata->max_fcoe_filters);
             break;
         }
         case I40E_VIRTCHNL_OP_GET_STATS: {
             struct i40e_eth_stats *mydata = (void*)data;
-            printf("    |- rx_bytes            = %#"PRIx64"\n", mydata->rx_bytes);
-            printf("    |- rx_unicast          = %#"PRIx64"\n", mydata->rx_unicast);
-            printf("    |- rx_multicast        = %#"PRIx64"\n", mydata->rx_multicast);
-            printf("    |- rx_broadcast        = %#"PRIx64"\n", mydata->rx_broadcast);
-            printf("    |- rx_discards         = %#"PRIx64"\n", mydata->rx_discards);
-            printf("    |- rx_unknown_protocol = %#"PRIx64"\n", mydata->rx_unknown_protocol);
-            printf("    |- tx_bytes            = %#"PRIx64"\n", mydata->tx_bytes);
-            printf("    |- tx_unicast          = %#"PRIx64"\n", mydata->tx_unicast);
-            printf("    |- tx_multicast        = %#"PRIx64"\n", mydata->tx_multicast);
-            printf("    |- tx_broadcast        = %#"PRIx64"\n", mydata->tx_broadcast);
-            printf("    |- tx_discards         = %#"PRIx64"\n", mydata->tx_discards);
-            printf("    `- tx_errors           = %#"PRIx64"\n", mydata->tx_errors);
+            DPRINTF("    |- rx_bytes            = %#"PRIx64"", mydata->rx_bytes);
+            DPRINTF("    |- rx_unicast          = %#"PRIx64"", mydata->rx_unicast);
+            DPRINTF("    |- rx_multicast        = %#"PRIx64"", mydata->rx_multicast);
+            DPRINTF("    |- rx_broadcast        = %#"PRIx64"", mydata->rx_broadcast);
+            DPRINTF("    |- rx_discards         = %#"PRIx64"", mydata->rx_discards);
+            DPRINTF("    |- rx_unknown_protocol = %#"PRIx64"", mydata->rx_unknown_protocol);
+            DPRINTF("    |- tx_bytes            = %#"PRIx64"", mydata->tx_bytes);
+            DPRINTF("    |- tx_unicast          = %#"PRIx64"", mydata->tx_unicast);
+            DPRINTF("    |- tx_multicast        = %#"PRIx64"", mydata->tx_multicast);
+            DPRINTF("    |- tx_broadcast        = %#"PRIx64"", mydata->tx_broadcast);
+            DPRINTF("    |- tx_discards         = %#"PRIx64"", mydata->tx_discards);
+            DPRINTF("    `- tx_errors           = %#"PRIx64"", mydata->tx_errors);
             break;
         }
         default:
-            printf("    `- data = ");
+            DPRINTF("    `- data = ");
             for (i = 0; i < req->datalen; i++) {
-                printf("%02x ", (uint8_t)data[i]);
+                DPRINTF("%02x ", (uint8_t)data[i]);
             }
-            printf("\n");
+            DPRINTF("");
             break;
         }
     }
@@ -655,15 +668,29 @@ static void vfio_i40e_print_aq_cmd(PCIDevice *pdev,
     g_free(data);
 }
 
-static void vfio_i40e_record_atq_cmd(VFIOI40EDevice *vdev,
-                                     I40eAdminQueueDescriptor *desc)
+static int vfio_i40e_record_atq_cmd(VFIOI40EDevice *vdev,
+                                    I40eAdminQueueDescriptor *desc)
 {
     PCIDevice *pdev = PCI_DEVICE(vdev);
     unsigned char data[desc->datalen];
     uint64_t data_addr;
 
+    if ((desc->opcode == I40E_AQC_OPC_SEND_MSG_TO_PF) &&
+        (desc->cookie_high == I40E_VIRTCHNL_OP_RESET_VF)) {
+        vdev->arq_ignore = 0;
+        vdev->arq_active = false;
+        vfio_i40evf_w32(vdev, I40E_VF_ATQT1, 0);
+        vfio_i40evf_vw32(vdev, I40E_VF_ARQLEN1, 0);
+        vfio_i40evf_vw32(vdev, I40E_VF_ATQH1, 0);
+        vfio_i40evf_vw32(vdev, I40E_VF_ATQT1, 0);
+        vfio_i40evf_vw32(vdev, I40E_VF_ARQH1, 0);
+        vfio_i40evf_vw32(vdev, I40E_VF_ARQT1, 0);
+        vfio_i40e_atq_send_nowait(vdev, desc);
+        return 1;
+    }
+
     if (!desc->datalen || (desc->opcode != I40E_AQC_OPC_SEND_MSG_TO_PF)) {
-        return;
+        return 0;
     }
 
     data_addr = desc->params.external.addr_high;
@@ -701,6 +728,8 @@ static void vfio_i40e_record_atq_cmd(VFIOI40EDevice *vdev,
         break;
     }
     }
+
+    return 0;
 }
 
 /* Process one Admin Queue Command from the guest */
@@ -711,8 +740,9 @@ static void vfio_i40e_atq_process_one(VFIOI40EDevice *vdev, int index)
     PCIDevice *pdev = PCI_DEVICE(vdev);
     hwaddr addr = vfio_i40e_get_atqba(vdev) + (index * sizeof(desc));
 
-DPRINTF("XXX %s:%d guest queue index = %#x\n", __func__, __LINE__, index);
-DPRINTF("XXX %s:%d queue addr = %#lx\n", __func__, __LINE__, addr);
+    DPRINTF(" guest queue index = %#x", index);
+    DPRINTF(" queue addr = %#lx", addr);
+
     /* Read guest's command */
     pci_dma_read(pdev, addr, &desc, sizeof(desc));
 
@@ -722,7 +752,10 @@ DPRINTF("XXX %s:%d queue addr = %#lx\n", __func__, __LINE__, addr);
         g_free(name);
     }
 
-    vfio_i40e_record_atq_cmd(vdev, &desc);
+    if (vfio_i40e_record_atq_cmd(vdev, &desc)) {
+        /* Command is already handled */
+        return;
+    }
 
     /* Run guest command on card */
     vfio_i40e_atq_send(vdev, &desc, &desc);
@@ -737,6 +770,36 @@ DPRINTF("XXX %s:%d queue addr = %#lx\n", __func__, __LINE__, addr);
 
     /* Notify guest that the request is finished */
     vfio_i40e_aq_inc(vdev, I40E_VF_ATQH1);
+}
+
+static void vfio_i40evf_arq_set_vsi_id(VFIOI40EDevice *vdev,
+                                       PCIDevice *pdev,
+                                       I40eAdminQueueDescriptor *desc)
+{
+    uint64_t data_addr;
+    unsigned char *data;
+    struct i40e_virtchnl_vf_resource *mydata;
+
+    if ((desc->opcode != I40E_AQC_OPC_SEND_MSG_TO_VF) ||
+        (desc->cookie_high != I40E_VIRTCHNL_OP_GET_VF_RESOURCES) ||
+        !desc->datalen) {
+        /* Something went wrong. Ignore this round */
+        return;
+    }
+
+    data = g_malloc(desc->datalen);
+    mydata = (void*)data;
+    data_addr = desc->params.external.addr_high;
+    data_addr <<= 32;
+    data_addr |= desc->params.external.addr_low;
+    pci_dma_read(pdev, data_addr, data, desc->datalen);
+
+    /* XXX We only support a single vsi id for now */
+    vdev->vsi_id = mydata->vsi_res[0].vsi_id;
+    DPRINTF(" new vsi_id: %#x", vdev->vsi_id);
+
+    vdev->arq_fetch_vsi_id = false;
+    g_free(data);
 }
 
 /* Send one Admin Receive Queue Command to the guest */
@@ -793,6 +856,9 @@ static void vfio_i40e_arq_process_one(VFIOI40EDevice *vdev, int hwarqh)
     if (vdev->arq_ignore) {
         /* Internal ARQ packet, ignore it */
         vdev->arq_ignore--;
+    } else if (vdev->arq_fetch_vsi_id) {
+        /* Packet containing our vsi id - use it to update our status */
+        vfio_i40evf_arq_set_vsi_id(vdev, pdev, &desc);
     } else {
         /* Copy command to guest */
         vfio_i40e_arq_recv(vdev, &desc);
@@ -839,10 +905,10 @@ static uint64_t vfio_i40evf_mmio_mem_region_read(void *opaque, hwaddr addr,
     VFIOI40EDevice *vdev = opaque;
     uint32_t val;
 
-    DPRINTF("XXX %s:%d -> %s %#x\n", __func__, __LINE__, vfio_i40evf_reg_name(addr), size);
+    DPRINTF(" -> %s %#x", vfio_i40evf_reg_name(addr), size);
     assert(size == 4);
     val = vfio_i40evf_r32(vdev, addr);
-    DPRINTF("XXX %s:%d -> val = %#x\n", __func__, __LINE__, val);
+    DPRINTF(" -> val = %#x", val);
     return val;
 }
 
@@ -851,7 +917,7 @@ static void vfio_i40evf_mmio_mem_region_write(void *opaque, hwaddr addr,
 {
     VFIOI40EDevice *vdev = opaque;
 
-    DPRINTF("XXX %s:%d -> %s %#x %#lx\n", __func__, __LINE__, vfio_i40evf_reg_name(addr), size, data);
+    DPRINTF(" -> %s %#x %#lx", vfio_i40evf_reg_name(addr), size, data);
     assert(size == 4);
     vfio_i40evf_w32(vdev, addr, data);
 }
@@ -871,7 +937,7 @@ static uint64_t vfio_i40evf_aq_mmio_mem_region_read(void *opaque, hwaddr subaddr
     VFIOI40EDevice *vdev = opaque;
     uint32_t val;
 
-    DPRINTF("XXX %s:%d -> %s %#x\n", __func__, __LINE__, vfio_i40evf_reg_name(addr), size);
+    DPRINTF(" -> %s %#x", vfio_i40evf_reg_name(addr), size);
     assert(size == 4);
 
     switch (addr) {
@@ -891,7 +957,7 @@ static uint64_t vfio_i40evf_aq_mmio_mem_region_read(void *opaque, hwaddr subaddr
         val = vfio_i40evf_r32(vdev, addr);
         break;
     }
-    DPRINTF("XXX %s:%d -> val = %#x\n", __func__, __LINE__, val);
+    DPRINTF(" -> val = %#x", val);
     return val;
 }
 
@@ -901,7 +967,7 @@ static void vfio_i40evf_aq_mmio_mem_region_write(void *opaque, hwaddr subaddr,
     hwaddr addr = subaddr + I40E_VF_ARQBAH1;
     VFIOI40EDevice *vdev = opaque;
 
-    DPRINTF("XXX %s:%d -> %s %#x %#lx\n", __func__, __LINE__, vfio_i40evf_reg_name(addr), size, data);
+    DPRINTF(" -> %s %#x %#lx", vfio_i40evf_reg_name(addr), size, data);
     assert(size == 4);
 
     switch (addr) {
@@ -1063,11 +1129,11 @@ static int vfio_i40evf_load(void *opaque, int version_id)
 
     /* Enable MSI */
     if (msi_enabled(pdev)) {
-        DPRINTF("XXX %s:%d Enabling MSI\n", __func__, __LINE__);
+        DPRINTF(" Enabling MSI");
         vfio_enable_msi(&vdev->parent_obj);
     }
     if (msix_enabled(pdev)) {
-        DPRINTF("XXX %s:%d Enabling MSI-X\n", __func__, __LINE__);
+        DPRINTF(" Enabling MSI-X");
         vfio_enable_msix(&vdev->parent_obj);
     }
 
@@ -1093,7 +1159,7 @@ static int vfio_i40evf_load(void *opaque, int version_id)
         vfio_i40e_print_aq_cmd(pdev, &mydesc, "ATQ GET VF RESOURCES");
         vfio_i40e_atq_send(vdev, &mydesc, &resp);
         vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ GET VF RESOURCES response");
-        vdev->arq_ignore++;
+        vdev->arq_fetch_vsi_id = true;
         vfio_i40e_aq_update(vdev);
     }
 
@@ -1158,7 +1224,7 @@ static int vfio_i40evf_load(void *opaque, int version_id)
         vfio_i40e_aq_update(vdev);
     }
 
-    DPRINTF("XXX %s:%d\n", __func__, __LINE__);
+    DPRINTF("");
     return 0;
 }
 
@@ -1166,7 +1232,7 @@ static void vfio_i40evf_save(void *opaque)
 {
     VFIOI40EDevice *vdev = opaque;
 
-    DPRINTF("XXX %s:%d\n", __func__, __LINE__);
+    DPRINTF("");
     I40eAdminQueueDescriptor desc = {
         .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
         .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
@@ -1325,7 +1391,7 @@ static void vfio_i40evf_instance_init(Object *obj)
 
     register_savevm_live(NULL, "i40evf", -1, 1, &savevm_handlers, vdev);
 
-    DPRINTF("XXX %s:%d\n", __func__, __LINE__);
+    DPRINTF("");
 }
 
 static int (*vfio_pci_init)(PCIDevice *dev);
@@ -1337,7 +1403,7 @@ static int vfio_i40evf_initfn(PCIDevice *dev)
     VFIOBAR *bar = &vpdev->bars[0];
 
     vfio_pci_init(dev);
-    DPRINTF("XXX %s:%d\n", __func__, __LINE__);
+    DPRINTF("");
     vdev->aq_len = 32;
 
     /* XXX debug MMIO access */
