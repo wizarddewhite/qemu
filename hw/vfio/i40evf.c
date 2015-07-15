@@ -1478,7 +1478,8 @@ static void vfio_i40e_map_aq_data(VFIOI40EDevice *vdev)
     Object *obj = OBJECT(vdev);
     AddressSpace *as = pci_device_iommu_address_space(pci_dev);
     MemoryRegion *mr = as->root;
-    int len = 64 * 1024;
+    int len = (I40E_AQ_LOCATION_ARQ_DATA - I40E_AQ_LOCATION) +
+              (I40E_ARQ_DATA_LEN * vdev->aq_len);
 
     vdev->admin_queue = qemu_memalign(page_size, len);
 
