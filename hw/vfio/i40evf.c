@@ -45,7 +45,7 @@
 #include "hw/vfio/pci.h"
 #include "hw/vfio/i40evf.h"
 
-// #define DEBUG_I40EVF
+//#define DEBUG_I40EVF
 
 #ifdef DEBUG_I40EVF
 static const int debug_i40evf = 1;
@@ -999,6 +999,42 @@ const MemoryRegionOps vfio_i40evf_mmio_mem_region_ops = {
 
 /************ end of mmio debug **************/
 
+/************ QRX trap **************/
+
+static uint64_t vfio_i40evf_qrx_tail_region_read(void *opaque, hwaddr subaddr,
+                                                 unsigned size)
+{
+    hwaddr addr = subaddr + I40E_QRX_TAIL1(0);
+    VFIOI40EDevice *vdev = opaque;
+    uint32_t val;
+
+    assert(size == 4);
+    val = vfio_i40evf_vr32(vdev, addr);
+    return val;
+}
+
+static void vfio_i40evf_qrx_tail_region_write(void *opaque, hwaddr subaddr,
+                                              uint64_t data, unsigned size)
+{
+    hwaddr addr = subaddr + I40E_QRX_TAIL1(0);
+    VFIOI40EDevice *vdev = opaque;
+
+    assert(size == 4);
+    /* Make sure our shadow copy is always in sync */
+    vfio_i40evf_vw32(vdev, addr, data);
+    vfio_i40evf_w32(vdev, addr, data);
+}
+
+const MemoryRegionOps vfio_i40evf_qrx_tail_region_ops = {
+    .read = vfio_i40evf_qrx_tail_region_read,
+    .write = vfio_i40evf_qrx_tail_region_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+/************ end of QRX trap **************/
+
+/************ Admin Queue trap **************/
+
 static uint64_t vfio_i40evf_aq_mmio_mem_region_read(void *opaque,
                                                     hwaddr subaddr,
                                                     unsigned size)
@@ -1065,6 +1101,8 @@ const MemoryRegionOps vfio_i40evf_aq_mmio_mem_region_ops = {
     .write = vfio_i40evf_aq_mmio_mem_region_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
+
+/************ end of Admin Queue trap **************/
 
 static const uint32_t vfio_i40evf_migration_reg_list[] = {
     I40E_VFQF_HKEY(0), I40E_VFQF_HKEY(1), I40E_VFQF_HKEY(2), I40E_VFQF_HKEY(3),
@@ -1190,21 +1228,246 @@ static uint16_t vsi_config_size(struct i40e_virtchnl_vsi_queue_config_info *vsi)
     return size;
 }
 
-static int vfio_i40evf_load(void *opaque, int version_id)
+static void vfio_i40evf_fetch_vsi_id(VFIOI40EDevice *vdev, PCIDevice *pdev)
 {
-    VFIOI40EDevice *vdev = opaque;
-    PCIDevice *pdev = PCI_DEVICE(vdev);
+    I40eAdminQueueDescriptor desc = {
+        .flags = I40E_AQ_FLAG_SI,
+        .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
+        .datalen = 0,
+        .cookie_high = I40E_VIRTCHNL_OP_GET_VF_RESOURCES,
+        .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
+        .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
+    };
+    I40eAdminQueueDescriptor resp;
+
+    vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ GET VF RESOURCES");
+    vfio_i40e_atq_send(vdev, &desc, &resp);
+    vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ GET VF RESOURCES response");
+    vdev->arq_fetch_vsi_id = true;
+    vfio_i40e_aq_update(vdev);
+}
+
+static void vfio_i40evf_send_irq_map(VFIOI40EDevice *vdev, PCIDevice *pdev,
+                                     struct i40e_virtchnl_irq_map_info *map)
+{
     void *data = vdev->admin_queue +
                  (I40E_AQ_LOCATION_ATQ_DATA - I40E_AQ_LOCATION);
     I40eAdminQueueDescriptor desc = {
         .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
         .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
-        .datalen = sizeof(struct i40e_virtchnl_queue_select),
+        .datalen = MIN(irq_map_size(map), sizeof(*map)),
+        .cookie_high = I40E_VIRTCHNL_OP_CONFIG_IRQ_MAP,
+        .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
+        .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
+    };
+    I40eAdminQueueDescriptor resp;
+
+    memcpy(data, map, desc.datalen);
+    vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ IRQ MAP");
+    vfio_i40e_atq_send(vdev, &desc, &resp);
+    vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ IRQ MAP response");
+    vdev->arq_ignore++;
+    vfio_i40e_aq_update(vdev);
+}
+
+static void vfio_i40evf_del_eth_addr(VFIOI40EDevice *vdev, PCIDevice *pdev,
+                                     struct i40e_virtchnl_ether_addr_list *list)
+{
+    void *data = vdev->admin_queue +
+                 (I40E_AQ_LOCATION_ATQ_DATA - I40E_AQ_LOCATION);
+    I40eAdminQueueDescriptor desc = {
+        .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
+        .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
+        .datalen = MIN(ether_list_size(list), sizeof(*list)),
+        .cookie_high = I40E_VIRTCHNL_OP_DEL_ETHER_ADDRESS,
+        .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
+        .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
+    };
+    I40eAdminQueueDescriptor resp;
+
+    memcpy(data, list, desc.datalen);
+    vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ DEL ETHER ADDRESS");
+    vfio_i40e_atq_send(vdev, &desc, &resp);
+    vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ DEL ETHER ADDRESS response");
+    vdev->arq_ignore++;
+    vfio_i40e_aq_update(vdev);
+}
+
+static void vfio_i40evf_add_eth_addr(VFIOI40EDevice *vdev, PCIDevice *pdev,
+                                     struct i40e_virtchnl_ether_addr_list *list)
+{
+    void *data = vdev->admin_queue +
+                 (I40E_AQ_LOCATION_ATQ_DATA - I40E_AQ_LOCATION);
+    I40eAdminQueueDescriptor desc = {
+        .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
+        .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
+        .datalen = MIN(ether_list_size(list), sizeof(*list)),
+        .cookie_high = I40E_VIRTCHNL_OP_ADD_ETHER_ADDRESS,
+        .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
+        .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
+    };
+    I40eAdminQueueDescriptor resp;
+
+    memcpy(data, list, desc.datalen);
+    vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ ADD ETHER ADDRESS");
+    vfio_i40e_atq_send(vdev, &desc, &resp);
+    vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ ADD ETHER ADDRESS response");
+    vdev->arq_ignore++;
+    vfio_i40e_aq_update(vdev);
+}
+
+static void vfio_i40evf_config_queues(VFIOI40EDevice *vdev, PCIDevice *pdev,
+    struct i40e_virtchnl_vsi_queue_config_info *vsi)
+{
+    void *data = vdev->admin_queue +
+                 (I40E_AQ_LOCATION_ATQ_DATA - I40E_AQ_LOCATION);
+    I40eAdminQueueDescriptor desc = {
+        .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
+        .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
+        .datalen = MIN(vsi_config_size(vsi), sizeof(*vsi)),
+        .cookie_high = I40E_VIRTCHNL_OP_CONFIG_VSI_QUEUES,
+        .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
+        .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
+    };
+    I40eAdminQueueDescriptor resp;
+
+    memcpy(data, vsi, desc.datalen);
+    vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ VSI QUEUES");
+    vfio_i40e_atq_send(vdev, &desc, &resp);
+    vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ VSI QUEUES response");
+    vdev->arq_ignore++;
+    vfio_i40e_aq_update(vdev);
+}
+
+static void vfio_i40evf_disable_queues(VFIOI40EDevice *vdev, PCIDevice *pdev,
+                                       struct i40e_virtchnl_queue_select *sel)
+{
+    void *data = vdev->admin_queue +
+                 (I40E_AQ_LOCATION_ATQ_DATA - I40E_AQ_LOCATION);
+    I40eAdminQueueDescriptor desc = {
+        .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
+        .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
+        .datalen = sizeof(*sel),
         .cookie_high = I40E_VIRTCHNL_OP_DISABLE_QUEUES,
         .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
         .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
     };
     I40eAdminQueueDescriptor resp;
+
+    memcpy(data, sel, desc.datalen);
+    vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ DISABLE QUEUES");
+    vfio_i40e_atq_send(vdev, &desc, &resp);
+    vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ DISABLE QUEUES response");
+    vdev->arq_ignore++;
+    vfio_i40e_aq_update(vdev);
+}
+
+static void vfio_i40evf_enable_queues(VFIOI40EDevice *vdev, PCIDevice *pdev,
+                                      struct i40e_virtchnl_queue_select *sel)
+{
+    void *data = vdev->admin_queue +
+                 (I40E_AQ_LOCATION_ATQ_DATA - I40E_AQ_LOCATION);
+    I40eAdminQueueDescriptor desc = {
+        .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
+        .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
+        .datalen = sizeof(*sel),
+        .cookie_high = I40E_VIRTCHNL_OP_ENABLE_QUEUES,
+        .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
+        .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
+    };
+    I40eAdminQueueDescriptor resp;
+
+    memcpy(data, sel, desc.datalen);
+    vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ ENABLE QUEUES");
+    vfio_i40e_atq_send(vdev, &desc, &resp);
+    vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ ENABLE QUEUES response");
+    vdev->arq_ignore++;
+    vfio_i40e_aq_update(vdev);
+}
+
+static void vfio_i40evf_enable_rx_tracking(VFIOI40EDevice *vdev)
+{
+    uintptr_t page_size = getpagesize();
+    hwaddr ring_addr = I40E_RING_LOCATION;
+    hwaddr ring_size;
+    int i;
+    void *data = vdev->admin_queue +
+                 (I40E_AQ_LOCATION_ATQ_DATA - I40E_AQ_LOCATION);
+    void *ring;
+    PCIDevice *pdev = PCI_DEVICE(vdev);
+    AddressSpace *as = pci_device_iommu_address_space(pdev);
+    MemoryRegion *mr = as->root;
+    VFIOPCIDevice *vpdev = VFIO_PCI(vdev);
+    VFIOBAR *bar = &vpdev->bars[0];
+    struct i40e_virtchnl_vsi_queue_config_info *vsi = data;
+    I40eAdminQueueDescriptor desc = {
+        .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
+        .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
+        .datalen = MIN(vsi_config_size(&vdev->vsi_config),
+                       sizeof(vdev->vsi_config)),
+        .cookie_high = I40E_VIRTCHNL_OP_CONFIG_VSI_QUEUES,
+        .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
+        .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
+    };
+    I40eAdminQueueDescriptor resp;
+
+    /* Prepare our shadow config and size the rings */
+    *vsi = vdev->vsi_config;
+    for (i = 0; i < MIN(16, vsi->num_queue_pairs); i++) {
+        vsi->qpair[i].rxq.dma_ring_addr = ring_addr;
+        ring_addr += vsi->qpair[i].rxq.ring_len * 32;
+    }
+    ring_size = ring_addr - I40E_RING_LOCATION;
+
+    /* XXX Stop all CPUs */
+    vfio_i40evf_disable_queues(vdev, pdev, &vdev->queue_select);
+
+    /* Map our shadow rings */
+    vdev->ring = qemu_memalign(page_size, ring_size);
+    memory_region_init_ram_ptr(&vdev->ring_mem, OBJECT(vdev),
+                               "i40e ring shadow", ring_size, vdev->ring);
+    memory_region_add_subregion_overlap(mr, I40E_AQ_LOCATION,
+                                        &vdev->ring_mem, 30);
+
+    /* Make sure we know where the QRX tail is */
+    for (i = 0; i < 16; i++) {
+        vfio_i40evf_vw32(vdev, I40E_QRX_TAIL1(i),
+                         vfio_i40evf_r32(vdev, I40E_QRX_TAIL1(i)));
+    }
+    memory_region_init_io(&vdev->qrx_tail_mem, OBJECT(vdev),
+                          &vfio_i40evf_qrx_tail_region_ops,
+                          vdev, "i40evf QRX TAIL",
+                          I40E_QRX_TAIL1(16) - I40E_QRX_TAIL1(0));
+    memory_region_add_subregion_overlap(&bar->region.mem, I40E_QRX_TAIL1(0),
+                                        &vdev->qrx_tail_mem, 29);
+
+    /* Copy the guest's rings into our ring shadow */
+    ring = vdev->ring;
+    for (i = 0; i < MIN(16, vsi->num_queue_pairs); i++) {
+        hwaddr rxq_addr = vdev->vsi_config.qpair[i].rxq.dma_ring_addr;
+        hwaddr len = vsi->qpair[i].rxq.ring_len * 32;
+
+        pci_dma_read(pdev, rxq_addr, ring, len);
+        ring += len;
+    }
+
+    /* Reconfigure the queues with our descriptor */
+    vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ Rerouting VSI QUEUES");
+    vfio_i40e_atq_send(vdev, &desc, &resp);
+    vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ Rerouting VSI QUEUES response");
+    vdev->arq_ignore++;
+    vfio_i40e_aq_update(vdev);
+
+    /* XXX Trap on RX interrupt to copy & dirty the queue */
+    /* XXX Shadow RX interrupt register */
+    vfio_i40evf_enable_queues(vdev, pdev, &vdev->queue_select);
+    /* XXX Resume all CPUs */
+}
+
+static int vfio_i40evf_load(void *opaque, int version_id)
+{
+    VFIOI40EDevice *vdev = opaque;
+    PCIDevice *pdev = PCI_DEVICE(vdev);
     int i, cmd;
 
     /* Restore config space */
@@ -1237,89 +1500,19 @@ static int vfio_i40evf_load(void *opaque, int version_id)
         vfio_enable_msix(&vdev->parent_obj);
     }
 
-    /* Make VF happy by asking it a few questions */
-    {
-        volatile struct i40e_virtchnl_version_info *mydata = data;
-        mydata->major = 1;
-        mydata->minor = 0;
-        desc.cookie_high = I40E_VIRTCHNL_OP_VERSION;
-        desc.datalen = sizeof(struct i40e_virtchnl_version_info);
-        vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ GET VERSION");
-        vfio_i40e_atq_send(vdev, &desc, &resp);
-        vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ GET VERSION response");
-        vdev->arq_ignore++;
-        vfio_i40e_aq_update(vdev);
-    }
+    /* Read the new VSI ID that we need to talk to the new VF */
+    vfio_i40evf_fetch_vsi_id(vdev, pdev);
 
-    {
-        I40eAdminQueueDescriptor mydesc = desc;
-        mydesc.cookie_high = I40E_VIRTCHNL_OP_GET_VF_RESOURCES;
-        mydesc.datalen = 0;
-        mydesc.flags = I40E_AQ_FLAG_SI;
-        vfio_i40e_print_aq_cmd(pdev, &mydesc, "ATQ GET VF RESOURCES");
-        vfio_i40e_atq_send(vdev, &mydesc, &resp);
-        vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ GET VF RESOURCES response");
-        vdev->arq_fetch_vsi_id = true;
-        vfio_i40e_aq_update(vdev);
-    }
+    /* Restore VF configuration based on migrated state */
+    vfio_i40evf_send_irq_map(vdev, pdev, &vdev->irq_map);
+    vfio_i40evf_del_eth_addr(vdev, pdev, &vdev->addr);
+    vfio_i40evf_add_eth_addr(vdev, pdev, &vdev->addr);
+    vfio_i40evf_config_queues(vdev, pdev, &vdev->vsi_config);
+    vfio_i40evf_enable_queues(vdev, pdev, &vdev->queue_select);
 
-    /* Restore VF configuration */
-    {
-        desc.cookie_high = I40E_VIRTCHNL_OP_CONFIG_IRQ_MAP;
-        desc.datalen = MIN(irq_map_size(&vdev->irq_map), sizeof(vdev->irq_map));
-        memcpy(data, &vdev->irq_map, desc.datalen);
-        vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ IRQ MAP");
-        vfio_i40e_atq_send(vdev, &desc, &resp);
-        vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ IRQ MAP response");
-        vdev->arq_ignore++;
-        vfio_i40e_aq_update(vdev);
-    }
-
-    {
-        desc.cookie_high = I40E_VIRTCHNL_OP_DEL_ETHER_ADDRESS;
-        desc.datalen = MIN(ether_list_size(&vdev->addr), sizeof(vdev->addr));
-        memcpy(data, &vdev->addr, desc.datalen);
-        vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ DEL ETHER ADDRESS");
-        vfio_i40e_atq_send(vdev, &desc, &resp);
-        vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ DEL ETHER ADDRESS response");
-        vdev->arq_ignore++;
-        vfio_i40e_aq_update(vdev);
-    }
-
-    {
-        desc.cookie_high = I40E_VIRTCHNL_OP_ADD_ETHER_ADDRESS;
-        desc.datalen = MIN(ether_list_size(&vdev->addr), sizeof(vdev->addr));
-        memcpy(data, &vdev->addr, desc.datalen);
-        vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ ETHER ADDRESS");
-        vfio_i40e_atq_send(vdev, &desc, &resp);
-        vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ ETHER ADDRESS response");
-        vdev->arq_ignore++;
-        vfio_i40e_aq_update(vdev);
-    }
-
-    {
-        desc.cookie_high = I40E_VIRTCHNL_OP_CONFIG_VSI_QUEUES;
-        desc.datalen = MIN(vsi_config_size(&vdev->vsi_config),
-                           sizeof(vdev->vsi_config));
-        memcpy(data, &vdev->vsi_config, desc.datalen);
-        vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ VSI QUEUES");
-        vfio_i40e_atq_send(vdev, &desc, &resp);
-        vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ VSI QUEUES response");
-        vdev->arq_ignore++;
-        vfio_i40e_aq_update(vdev);
-    }
-
-    {
-        volatile struct i40e_virtchnl_queue_select *mydata = data;
-        *mydata = vdev->queue_select;
-        desc.cookie_high = I40E_VIRTCHNL_OP_ENABLE_QUEUES;
-        desc.datalen = sizeof(*mydata);
-        vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ ENABLE QUEUES");
-        vfio_i40e_atq_send(vdev, &desc, &resp);
-        vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ ENABLE QUEUES response");
-        vdev->arq_ignore++;
-        vfio_i40e_aq_update(vdev);
-    }
+    /* XXX hack to verify whether things work! */
+    if (0)
+    vfio_i40evf_enable_rx_tracking(vdev);
 
     DPRINTF("");
     return 0;

@@ -92,6 +92,7 @@ typedef struct I40eAdminQueueDescriptor {
 #define I40E_AQ_LOCATION_ATQ_DATA 0x70000010000ULL
 #define I40E_AQ_LOCATION_ARQ_DATA 0x70000020000ULL
 #define I40E_ARQ_DATA_LEN         0x200
+#define I40E_RING_LOCATION        0x70000030000ULL
 
 /* I40E_MASK is a macro used on 32 bit registers */
 #define I40E_MASK(mask, shift) (mask << shift)
@@ -667,18 +668,28 @@ enum i40e_vfr_states {
 typedef struct VFIOI40EDevice {
     struct VFIOPCIDevice parent_obj;
     uint32_t regs[(64 * 1024) / 4];
-    bool arq_active;
-    MemoryRegion mmio_mem;
+
+    /* For Admin Queue proxying (always on) */
     MemoryRegion aq_mmio_mem;
     MemoryRegion aq_data_mem;
     void *admin_queue;
+    bool arq_active;
     int aq_len;
     int arq_last;
     int arq_ignore; /* nr of arq elements to drop */
     bool arq_fetch_vsi_id;
     int vsi_id;
 
-    /* Intercepted config from guest */
+    /* For RX shadowing (only during migration) */
+    MemoryRegion ring_mem;
+    MemoryRegion qrx_tail_mem;
+    void *ring;
+    int ring_head[16];
+
+    /* For debug */
+    MemoryRegion mmio_mem;
+
+    /* Intercepted configs from guest */
     struct i40e_virtchnl_irq_map_info irq_map;
     struct i40e_virtchnl_ether_addr_list addr;
     struct i40e_virtchnl_vsi_queue_config_info vsi_config;
