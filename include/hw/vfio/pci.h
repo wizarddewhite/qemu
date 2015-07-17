@@ -146,4 +146,5 @@ typedef struct VFIOPCIDevice {
     bool has_flr;
     bool has_pm_reset;
     bool rom_read_failed;
+    bool enable_kvm_msix;
 } VFIOPCIDevice;

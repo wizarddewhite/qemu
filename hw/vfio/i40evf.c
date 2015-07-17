@@ -61,8 +61,19 @@ static const int debug_i40evf = 0;
         } \
     } while (0)
 
+#define DPRINTF_RX(fmt, ...) do { \
+        if (1) { \
+            printf("i40evf: %38s:%04d" fmt "\n" , \
+                   __func__, __LINE__, ## __VA_ARGS__); \
+        } \
+    } while (0)
+
 void vfio_enable_msi(VFIOPCIDevice *vdev);
-void vfio_enable_msix(VFIOPCIDevice *vdev);
+void vfio_enable_msix(VFIOPCIDevice *vdev, MSIVectorUseNotifier vector_use);
+void vfio_disable_msix(VFIOPCIDevice *vdev);
+int vfio_msix_vector_do_use(PCIDevice *pdev, unsigned int nr,
+                            MSIMessage *msg, IOHandler *handler);
+void vfio_msi_interrupt(void *opaque);
 
 static const char *vfio_i40evf_v_opcode_name(int reg)
 {
@@ -411,6 +422,11 @@ static void vfio_i40evf_atq_fixup_vsi_id(VFIOI40EDevice *vdev,
         req->params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32;
         req->params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA;
         break;
+    }
+
+    if (vdev->vsi_id == -1) {
+        /* No migration happened yet, stick to what the guest says */
+        return;
     }
 
     switch (req->cookie_high) {
@@ -909,6 +925,7 @@ static void vfio_i40e_arq_process_one(VFIOI40EDevice *vdev, int hwarqh)
     volatile I40eAdminQueueDescriptor *arq = vdev->admin_queue + arq_offset;
     volatile I40eAdminQueueDescriptor *arq_cur = &arq[hwarqh];
     I40eAdminQueueDescriptor desc;
+    int arq_next;
 
     /* Read request */
     desc = *arq_cur;
@@ -936,8 +953,8 @@ static void vfio_i40e_arq_process_one(VFIOI40EDevice *vdev, int hwarqh)
 
     /* Remember that we're done with the command */
     vdev->arq_last = vfio_i40evf_r32(vdev, I40E_VF_ARQH1);
-    vfio_i40evf_w32(vdev, I40E_VF_ARQT1,
-                    (vdev->arq_last + 1) & (vdev->aq_len - 1));
+    arq_next = (vdev->arq_last + 1) & (vdev->aq_len - 1);
+    vfio_i40evf_w32(vdev, I40E_VF_ARQT1, arq_next);
 }
 
 static void vfio_i40e_aq_update(VFIOI40EDevice *vdev)
@@ -961,8 +978,15 @@ static void vfio_i40e_aq_update(VFIOI40EDevice *vdev)
         vfio_i40e_atq_process_one(vdev, vfio_i40evf_vr32(vdev, I40E_VF_ATQH1));
     }
 
+get_arq:
     while (vdev->arq_last != vfio_i40evf_r32(vdev, I40E_VF_ARQH1)) {
         vfio_i40e_arq_process_one(vdev, vdev->arq_last);
+    }
+
+    if (vdev->arq_ignore) {
+        /* We're waiting for an ARQ packet. Loop until we have it */
+        usleep(5000);
+        goto get_arq;
     }
 }
 
@@ -1004,13 +1028,26 @@ const MemoryRegionOps vfio_i40evf_mmio_mem_region_ops = {
 static uint64_t vfio_i40evf_qrx_tail_region_read(void *opaque, hwaddr subaddr,
                                                  unsigned size)
 {
+    int idx = subaddr / I40E_QRX_TAIL1(1);
     hwaddr addr = subaddr + I40E_QRX_TAIL1(0);
     VFIOI40EDevice *vdev = opaque;
     uint32_t val;
 
     assert(size == 4);
     val = vfio_i40evf_vr32(vdev, addr);
+
+    DPRINTF_RX(" RX tail %d read: %#x", idx, val);
+
     return val;
+}
+
+static void dump_rxq(union i40e_32byte_rx_desc *vring, int n)
+{
+    int i;
+
+    for (i = 0; i < n; i++) {
+        printf("vring[%#x] {%p} = %#lx | %#lx\n", i, &vring[i], vring[i].read.pkt_addr, vring[i].read.hdr_addr);
+    }
 }
 
 static void vfio_i40evf_qrx_tail_region_write(void *opaque, hwaddr subaddr,
@@ -1018,11 +1055,35 @@ static void vfio_i40evf_qrx_tail_region_write(void *opaque, hwaddr subaddr,
 {
     hwaddr addr = subaddr + I40E_QRX_TAIL1(0);
     VFIOI40EDevice *vdev = opaque;
+    int idx = subaddr / I40E_QRX_TAIL1(1);
+    uint32_t tail = data;
+    uint32_t old_tail = vfio_i40evf_vr32(vdev, addr);
+    struct i40e_virtchnl_rxq_info *rxq = &vdev->vsi_config.qpair[idx].rxq;
+    hwaddr rxq_addr = rxq->dma_ring_addr;
+    PCIDevice *pdev = &vdev->parent_obj.pdev;
 
     assert(size == 4);
+    DPRINTF_RX(" RX tail %d write: %#"PRIx64, idx, data);
     /* Make sure our shadow copy is always in sync */
     vfio_i40evf_vw32(vdev, addr, data);
     vfio_i40evf_w32(vdev, addr, data);
+
+    /* Copy the new descriptors into our shadow queue */
+    if (tail < old_tail) {
+        int nr_eoq = rxq->ring_len - old_tail;
+        DPRINTF_RX(" Copying q%d descs %#x-%#x from guest to host",
+                   idx, old_tail, nr_eoq + old_tail);
+        pci_dma_read(pdev, rxq_addr + (old_tail * 32),
+                     &vdev->vring[idx][old_tail], nr_eoq * 32);
+        old_tail = 0;
+    }
+
+    DPRINTF_RX(" Copying q%d descs %#x-%#x from guest to host",
+               idx, old_tail, tail + old_tail);
+dump_rxq(&vdev->vring[idx][old_tail], tail + 0x10);
+    pci_dma_read(pdev, rxq_addr + (old_tail * 32), &vdev->vring[idx][old_tail],
+                 tail * 32);
+dump_rxq(&vdev->vring[idx][old_tail], tail + 0x10);
 }
 
 const MemoryRegionOps vfio_i40evf_qrx_tail_region_ops = {
@@ -1168,8 +1229,31 @@ static void vfio_i40evf_start_migration(const MigrationParams *params,
     /* Read registers */
     for (i = 0; i < (ARRAY_SIZE(vfio_i40evf_migration_reg_list)); i++) {
         int reg = vfio_i40evf_migration_reg_list[i];
+        uint32_t val = vfio_i40evf_r32(vdev, reg);
 
-        vfio_i40evf_vw32(vdev, reg, vfio_i40evf_r32(vdev, reg));
+        switch (reg) {
+        case I40E_QRX_TAIL1(0):
+        case I40E_QRX_TAIL1(1):
+        case I40E_QRX_TAIL1(2):
+        case I40E_QRX_TAIL1(3):
+        case I40E_QRX_TAIL1(4):
+        case I40E_QRX_TAIL1(5):
+        case I40E_QRX_TAIL1(6):
+        case I40E_QRX_TAIL1(7):
+        case I40E_QRX_TAIL1(8):
+        case I40E_QRX_TAIL1(9):
+        case I40E_QRX_TAIL1(10):
+        case I40E_QRX_TAIL1(11):
+        case I40E_QRX_TAIL1(12):
+        case I40E_QRX_TAIL1(13):
+        case I40E_QRX_TAIL1(14):
+        case I40E_QRX_TAIL1(15):
+            /* Hardware always tells us the tail without low bits, set them */
+            val += 7;
+            break;
+        }
+
+        vfio_i40evf_vw32(vdev, reg, val);
     }
 }
 
@@ -1385,6 +1469,85 @@ static void vfio_i40evf_enable_queues(VFIOI40EDevice *vdev, PCIDevice *pdev,
     vfio_i40e_aq_update(vdev);
 }
 
+static void vfio_i40evf_msi_interrupt(void *opaque)
+{
+    VFIOMSIVector *vector = opaque;
+    VFIOPCIDevice *vpdev = vector->vdev;
+    PCIDevice *pdev = &vpdev->pdev;
+    VFIOI40EDevice *vdev = DO_UPCAST(VFIOI40EDevice, parent_obj, vpdev);
+    int num_qps = MIN(vdev->vsi_config.num_queue_pairs,
+                      ARRAY_SIZE(vdev->vsi_config.qpair));
+    int i;
+    union i40e_32byte_rx_desc *ring = vdev->ring;
+
+    DPRINTF_RX("");
+
+    /* Copy ring information into guest */
+    for (i = 0; i < num_qps; i++) {
+        struct i40e_virtchnl_rxq_info *rxq = &vdev->vsi_config.qpair[i].rxq;
+        hwaddr addr = rxq->dma_ring_addr;
+        int tail = vfio_i40evf_vr32(vdev, I40E_QRX_TAIL1(i));
+        int head = vdev->ring_head[i];
+        int qlen = (head < tail) ? (tail - head) :
+                                   (rxq->ring_len - (head - tail));
+        hwaddr len = qlen * 32;
+        union i40e_32byte_rx_desc guest_ring[qlen];
+        int j;
+        int cur_idx = 0;
+
+        /* Read the guest queue for our current region so that we know
+         * which addresses the buffers should be at */
+        if (head < tail) {
+            pci_dma_read(pdev, addr + (head * 32), guest_ring, len);
+        } else {
+            pci_dma_read(pdev, addr + (head * 32), guest_ring,
+                         (rxq->ring_len - head) * 32);
+            pci_dma_read(pdev, addr, &guest_ring[rxq->ring_len - head],
+                         tail * 32);
+        }
+
+        DPRINTF_RX(" q%d qlen=%#x | head=%#x | tail=%#x", i, qlen, head, tail);
+        /* XXX mark used buffers as dirty */
+        for (j = 0; j < qlen; j++) {
+            cur_idx = (j + head) % rxq->ring_len;
+            DPRINTF_RX(" ring[%#x].status=%#"PRIx64" {%p}", cur_idx,
+                       ring[cur_idx].wb.qword1.status_error_len, &ring[cur_idx]);
+            vdev->ring_head[i] = cur_idx;
+            if (ring[cur_idx].wb.qword1.status_error_len & I40E_RXQ_STATUS_DD) {
+                /* New RX package */
+                DPRINTF_RX(" RX buffer[%#x] at %#"PRIx64"/%#"PRIx64" is dirty",
+                           cur_idx,
+                           guest_ring[j].read.pkt_addr,
+                           guest_ring[j].read.hdr_addr);
+            } else {
+                /* Unused element after used one, so end of transmission */
+                break;
+            }
+        }
+
+        /* Write the status bits into guest queue */
+        if (head < tail) {
+            pci_dma_write(pdev, addr + (head * 32), ring, (tail - head) * 32);
+        } else {
+            int nr_eoq = rxq->ring_len - head;
+            pci_dma_write(pdev, addr + (head * 32), ring, nr_eoq * 32);
+            pci_dma_write(pdev, addr, &ring[nr_eoq], tail * 32);
+        }
+
+        /* Go to the next ring */
+        ring += rxq->ring_len;
+    }
+
+    /* Tell guest about new data */
+    vfio_msi_interrupt(opaque);
+}
+
+static int vfio_msix_vector_use(PCIDevice *pdev,
+                                unsigned int nr, MSIMessage msg)
+{
+    return vfio_msix_vector_do_use(pdev, nr, &msg, vfio_i40evf_msi_interrupt);
+}
+
 static void vfio_i40evf_enable_rx_tracking(VFIOI40EDevice *vdev)
 {
     uintptr_t page_size = getpagesize();
@@ -1400,33 +1563,27 @@ static void vfio_i40evf_enable_rx_tracking(VFIOI40EDevice *vdev)
     VFIOPCIDevice *vpdev = VFIO_PCI(vdev);
     VFIOBAR *bar = &vpdev->bars[0];
     struct i40e_virtchnl_vsi_queue_config_info *vsi = data;
-    I40eAdminQueueDescriptor desc = {
-        .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
-        .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
-        .datalen = MIN(vsi_config_size(&vdev->vsi_config),
-                       sizeof(vdev->vsi_config)),
-        .cookie_high = I40E_VIRTCHNL_OP_CONFIG_VSI_QUEUES,
-        .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
-        .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
-    };
-    I40eAdminQueueDescriptor resp;
-
-    /* Prepare our shadow config and size the rings */
-    *vsi = vdev->vsi_config;
-    for (i = 0; i < MIN(16, vsi->num_queue_pairs); i++) {
-        vsi->qpair[i].rxq.dma_ring_addr = ring_addr;
-        ring_addr += vsi->qpair[i].rxq.ring_len * 32;
-    }
-    ring_size = ring_addr - I40E_RING_LOCATION;
+    uint32_t max_data_size = 0;
 
     /* XXX Stop all CPUs */
     vfio_i40evf_disable_queues(vdev, pdev, &vdev->queue_select);
 
+    /* Prepare our shadow config and size the rings */
+    memcpy(vsi, &vdev->vsi_config,
+           MIN(vsi_config_size(&vdev->vsi_config), sizeof(vdev->vsi_config)));
+    for (i = 0; i < MIN(16, vsi->num_queue_pairs); i++) {
+        struct i40e_virtchnl_rxq_info *rxq = &vsi->qpair[i].rxq;
+        rxq->dma_ring_addr = ring_addr;
+        ring_addr += rxq->ring_len * 32;
+        max_data_size = MAX(max_data_size, rxq->databuffer_size);
+    }
+    ring_size = ring_addr - I40E_RING_LOCATION;
+
     /* Map our shadow rings */
-    vdev->ring = qemu_memalign(page_size, ring_size);
+    vdev->ring = qemu_memalign(page_size, ring_size + max_data_size);
     memory_region_init_ram_ptr(&vdev->ring_mem, OBJECT(vdev),
                                "i40e ring shadow", ring_size, vdev->ring);
-    memory_region_add_subregion_overlap(mr, I40E_AQ_LOCATION,
+    memory_region_add_subregion_overlap(mr, I40E_RING_LOCATION,
                                         &vdev->ring_mem, 30);
 
     /* Make sure we know where the QRX tail is */
@@ -1443,22 +1600,67 @@ static void vfio_i40evf_enable_rx_tracking(VFIOI40EDevice *vdev)
 
     /* Copy the guest's rings into our ring shadow */
     ring = vdev->ring;
-    for (i = 0; i < MIN(16, vsi->num_queue_pairs); i++) {
-        hwaddr rxq_addr = vdev->vsi_config.qpair[i].rxq.dma_ring_addr;
-        hwaddr len = vsi->qpair[i].rxq.ring_len * 32;
 
+    for (i = 0; i < 16; i++) {
+        vdev->vring[i] = ring;
+    }
+
+    for (i = 0; i < MIN(16, vsi->num_queue_pairs); i++) {
+        union i40e_32byte_rx_desc *vring = ring;
+        struct i40e_virtchnl_rxq_info *rxq = &vdev->vsi_config.qpair[i].rxq;
+        hwaddr rxq_addr = rxq->dma_ring_addr;
+        hwaddr len = rxq->ring_len * 32;
+        int j;
+        bool found_one_used = false;
+
+        DPRINTF_RX(" Reading %d entries from %#"PRIx64,
+                   rxq->ring_len, rxq_addr);
+
+        vdev->vring[i] = vring;
         pci_dma_read(pdev, rxq_addr, ring, len);
+
+        /* Find the first unused entry as head */
+        for (j = 0; j < rxq->ring_len; j++) {
+            DPRINTF_RX(" qp[%d].ring[%#x].addr=%#"PRIx64" / %#"PRIx64,
+                       i, j, vring[j].read.pkt_addr, vring[j].read.hdr_addr);
+
+            if (!vring[j].read.pkt_addr) {
+                /* The driver invalidates processed entries, so consider used
+                 * but skip and move away from guest memory */
+                vring[j].read.pkt_addr = vdev->tmp_addr;
+                //found_one_used = true;
+                continue;
+            }
+
+            if (found_one_used &&
+                !(vring[j].wb.qword1.status_error_len & I40E_RXQ_STATUS_DD)) {
+                vdev->ring_head[i] = j;
+                break;
+            }
+
+            if ((vring[j].wb.qword1.status_error_len & I40E_RXQ_STATUS_DD)) {
+                found_one_used = true;
+            }
+        }
+
+        if (vdev->ring_head[i]) {
+            /* The rx head for this queue was >0 but we can't set it, so
+             * we will lose the first n packets coming in */
+            DPRINTF_RX(" WARNING: Going to lose %d packets on queue %i",
+                       vdev->ring_head[i], i);
+        }
+
         ring += len;
     }
 
-    /* Reconfigure the queues with our descriptor */
-    vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ Rerouting VSI QUEUES");
-    vfio_i40e_atq_send(vdev, &desc, &resp);
-    vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ Rerouting VSI QUEUES response");
-    vdev->arq_ignore++;
-    vfio_i40e_aq_update(vdev);
+    /* Set the card to use our queues */
+    vfio_i40evf_config_queues(vdev, pdev, vsi);
 
-    /* XXX Trap on RX interrupt to copy & dirty the queue */
+    /* Trap on RX interrupt to copy & dirty the queue */
+    vfio_disable_msix(&vdev->parent_obj);
+    vdev->parent_obj.enable_kvm_msix = false;
+    vfio_enable_msix(&vdev->parent_obj, vfio_msix_vector_use);
+
     /* XXX Shadow RX interrupt register */
     vfio_i40evf_enable_queues(vdev, pdev, &vdev->queue_select);
     /* XXX Resume all CPUs */
@@ -1497,7 +1699,7 @@ static int vfio_i40evf_load(void *opaque, int version_id)
     }
     if (msix_enabled(pdev)) {
         DPRINTF(" Enabling MSI-X");
-        vfio_enable_msix(&vdev->parent_obj);
+        vfio_enable_msix(&vdev->parent_obj, NULL);
     }
 
     /* Read the new VSI ID that we need to talk to the new VF */
@@ -1511,7 +1713,6 @@ static int vfio_i40evf_load(void *opaque, int version_id)
     vfio_i40evf_enable_queues(vdev, pdev, &vdev->queue_select);
 
     /* XXX hack to verify whether things work! */
-    if (0)
     vfio_i40evf_enable_rx_tracking(vdev);
 
     DPRINTF("");
@@ -1672,9 +1873,11 @@ static void vfio_i40e_map_aq_data(VFIOI40EDevice *vdev)
     AddressSpace *as = pci_device_iommu_address_space(pci_dev);
     MemoryRegion *mr = as->root;
     int len = (I40E_AQ_LOCATION_ARQ_DATA - I40E_AQ_LOCATION) +
-              (I40E_ARQ_DATA_LEN * vdev->aq_len);
+              (I40E_ARQ_DATA_LEN * vdev->aq_len) + I40E_TMP_LEN;
 
     vdev->admin_queue = qemu_memalign(page_size, len);
+    vdev->tmp_addr = I40E_AQ_LOCATION_ARQ_DATA +
+                     (I40E_ARQ_DATA_LEN * vdev->aq_len);
 
     memory_region_init_ram_ptr(&vdev->aq_data_mem, obj, "i40e aq data", len,
                                vdev->admin_queue);
@@ -1687,6 +1890,7 @@ static void vfio_i40evf_instance_init(Object *obj)
     VFIOI40EDevice *vdev = VFIO_I40EVF(obj);
 
     register_savevm_live(NULL, "i40evf", -1, 1, &savevm_handlers, vdev);
+    vdev->vsi_id = -1;
 
     DPRINTF("");
 }

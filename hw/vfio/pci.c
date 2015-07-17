@@ -374,7 +374,8 @@ static void vfio_disable_intx(VFIOPCIDevice *vdev)
 /*
  * MSI/X
  */
-static void vfio_msi_interrupt(void *opaque)
+void vfio_msi_interrupt(void *opaque);
+void vfio_msi_interrupt(void *opaque)
 {
     VFIOMSIVector *vector = opaque;
     VFIOPCIDevice *vdev = vector->vdev;
@@ -495,8 +496,10 @@ static void vfio_update_kvm_msi_virq(VFIOMSIVector *vector, MSIMessage msg)
     kvm_irqchip_update_msi_route(kvm_state, vector->virq, msg);
 }
 
-static int vfio_msix_vector_do_use(PCIDevice *pdev, unsigned int nr,
-                                   MSIMessage *msg, IOHandler *handler)
+int vfio_msix_vector_do_use(PCIDevice *pdev, unsigned int nr,
+                            MSIMessage *msg, IOHandler *handler);
+int vfio_msix_vector_do_use(PCIDevice *pdev, unsigned int nr,
+                            MSIMessage *msg, IOHandler *handler)
 {
     VFIOPCIDevice *vdev = DO_UPCAST(VFIOPCIDevice, pdev, pdev);
     VFIOMSIVector *vector;
@@ -529,7 +532,7 @@ static int vfio_msix_vector_do_use(PCIDevice *pdev, unsigned int nr,
         } else {
             vfio_update_kvm_msi_virq(vector, *msg);
         }
-    } else {
+    } else if (vdev->enable_kvm_msix) {
         vfio_add_kvm_msi_virq(vector, msg, true);
     }
 
@@ -622,9 +625,13 @@ static void vfio_msix_vector_release(PCIDevice *pdev, unsigned int nr)
     }
 }
 
-void vfio_enable_msix(VFIOPCIDevice *vdev);
-void vfio_enable_msix(VFIOPCIDevice *vdev)
+void vfio_enable_msix(VFIOPCIDevice *vdev, MSIVectorUseNotifier vector_use);
+void vfio_enable_msix(VFIOPCIDevice *vdev, MSIVectorUseNotifier vector_use)
 {
+    if (!vector_use) {
+        vector_use = vfio_msix_vector_use;
+    }
+
     vfio_disable_interrupts(vdev);
 
     vdev->msi_vectors = g_malloc0(vdev->msix->entries * sizeof(VFIOMSIVector));
@@ -647,7 +654,7 @@ void vfio_enable_msix(VFIOPCIDevice *vdev)
     vfio_msix_vector_do_use(&vdev->pdev, 0, NULL, NULL);
     vfio_msix_vector_release(&vdev->pdev, 0);
 
-    if (msix_set_vector_notifiers(&vdev->pdev, vfio_msix_vector_use,
+    if (msix_set_vector_notifiers(&vdev->pdev, vector_use,
                                   vfio_msix_vector_release, NULL)) {
         error_report("vfio: msix_set_vector_notifiers failed");
     }
@@ -756,7 +763,8 @@ static void vfio_disable_msi_common(VFIOPCIDevice *vdev)
     vfio_enable_intx(vdev);
 }
 
-static void vfio_disable_msix(VFIOPCIDevice *vdev)
+void vfio_disable_msix(VFIOPCIDevice *vdev);
+void vfio_disable_msix(VFIOPCIDevice *vdev)
 {
     int i;
 
@@ -2020,7 +2028,7 @@ static void vfio_pci_write_config(PCIDevice *pdev, uint32_t addr,
         is_enabled = msix_enabled(pdev);
 
         if (!was_enabled && is_enabled) {
-            vfio_enable_msix(vdev);
+            vfio_enable_msix(vdev, vfio_msix_vector_use);
         } else if (was_enabled && !is_enabled) {
             vfio_disable_msix(vdev);
         }
@@ -3433,6 +3441,9 @@ static int vfio_initfn(PCIDevice *pdev)
     if (ret) {
         return ret;
     }
+
+    /* By default enable kvm accelerated MSI-X */
+    vdev->enable_kvm_msix = true;
 
     /* Get a copy of config space */
     ret = pread(vdev->vbasedev.fd, vdev->pdev.config,

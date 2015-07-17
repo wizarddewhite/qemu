@@ -93,6 +93,7 @@ typedef struct I40eAdminQueueDescriptor {
 #define I40E_AQ_LOCATION_ARQ_DATA 0x70000020000ULL
 #define I40E_ARQ_DATA_LEN         0x200
 #define I40E_RING_LOCATION        0x70000030000ULL
+#define I40E_TMP_LEN              0x10000ULL
 
 /* I40E_MASK is a macro used on 32 bit registers */
 #define I40E_MASK(mask, shift) (mask << shift)
@@ -663,11 +664,62 @@ enum i40e_vfr_states {
     I40E_VFR_UNKNOWN,
 };
 
+union i40e_32byte_rx_desc {
+        struct {
+                uint64_t  pkt_addr; /* Packet buffer address */
+                uint64_t  hdr_addr; /* Header buffer address */
+                        /* bit 0 of hdr_buffer_addr is DD bit */
+                uint64_t  rsvd1;
+                uint64_t  rsvd2;
+        } read;
+        struct {
+                struct {
+                        struct {
+                                union {
+                                        uint16_t mirroring_status;
+                                        uint16_t fcoe_ctx_id;
+                                } mirr_fcoe;
+                                uint16_t l2tag1;
+                        } lo_dword;
+                        union {
+                                uint32_t rss; /* RSS Hash */
+                                uint32_t fcoe_param; /* FCoE DDP Context id */
+                                /* Flow director filter id in case of
+                                 * Programming status desc WB
+                                 */
+                                uint32_t fd_id;
+                        } hi_dword;
+                } qword0;
+                struct {
+                        /* status/error/pktype/length */
+                        uint64_t status_error_len;
+#define I40E_RXQ_STATUS_DD 0x1
+                } qword1;
+                struct {
+                        uint16_t ext_status; /* extended status */
+                        uint16_t rsvd;
+                        uint16_t l2tag2_1;
+                        uint16_t l2tag2_2;
+                } qword2;
+                struct {
+                        union {
+                                uint32_t flex_bytes_lo;
+                                uint32_t pe_status;
+                        } lo_dword;
+                        union {
+                                uint32_t flex_bytes_hi;
+                                uint32_t fd_id;
+                        } hi_dword;
+                } qword3;
+        } wb;  /* writeback */
+};
+
 /********************************************/
 
 typedef struct VFIOI40EDevice {
     struct VFIOPCIDevice parent_obj;
     uint32_t regs[(64 * 1024) / 4];
+    hwaddr tmp_addr;
 
     /* For Admin Queue proxying (always on) */
     MemoryRegion aq_mmio_mem;
@@ -684,6 +736,7 @@ typedef struct VFIOI40EDevice {
     MemoryRegion ring_mem;
     MemoryRegion qrx_tail_mem;
     void *ring;
+    union i40e_32byte_rx_desc *vring[16];
     int ring_head[16];
 
     /* For debug */
