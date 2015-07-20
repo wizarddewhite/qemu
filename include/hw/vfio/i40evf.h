@@ -694,6 +694,7 @@ union i40e_32byte_rx_desc {
                         /* status/error/pktype/length */
                         uint64_t status_error_len;
 #define I40E_RXQ_STATUS_DD 0x1
+#define I40E_RXQ_STATUS_EOF 0x2
                 } qword1;
                 struct {
                         uint16_t ext_status; /* extended status */
@@ -738,6 +739,8 @@ typedef struct VFIOI40EDevice {
     void *ring;
     union i40e_32byte_rx_desc *vring[16];
     int ring_head[16];
+    uint32_t qrx_fast_forward[16];
+    bool qrx_shadow;
 
     /* For debug */
     MemoryRegion mmio_mem;
