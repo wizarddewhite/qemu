@@ -995,6 +995,8 @@ static uint64_t vfio_i40evf_mmio_mem_region_read(void *opaque, hwaddr addr,
     return val;
 }
 
+static void dump_tx_entry(PCIDevice *pdev, struct i40e_virtchnl_txq_info *txq,
+                          int idx);
 static void vfio_i40evf_mmio_mem_region_write(void *opaque, hwaddr addr,
                                               uint64_t data, unsigned size)
 {
@@ -1002,6 +1004,20 @@ static void vfio_i40evf_mmio_mem_region_write(void *opaque, hwaddr addr,
 
     DPRINTF(" -> %s %#x %#lx", vfio_i40evf_reg_name(addr), size, data);
     assert(size == 4);
+if ((addr == I40E_QTX_TAIL1(0) || addr == I40E_QTX_TAIL1(1))) {
+    PCIDevice *pdev = PCI_DEVICE(vdev);
+    struct i40e_virtchnl_txq_info *txq = &vdev->vsi_config.qpair[0].txq;
+    int i;
+    if (txq->headwb_enabled) {
+        uint32_t head = 0;
+        pci_dma_read(pdev, txq->dma_headwb_addr, &head, 4);
+        DPRINTF(" -> head = %#x", head);
+    }
+    for (i = 0; i < txq->ring_len; i++) {
+        dump_tx_entry(pdev, txq, i);
+    }
+    if (0) return;
+}
     vfio_i40evf_w32(vdev, addr, data);
 }
 
@@ -1040,6 +1056,7 @@ static void fill_empty_packet(VFIOI40EDevice *vdev, PCIDevice *pdev,
                                       I40E_RXQ_STATUS_EOF,
     };
 
+if (0)
     DPRINTF_RX(" Filling zero packet at idx %#x of queue %#"PRIx64,
                idx, rxq_addr);
     pci_dma_write(pdev, rxq_addr + (idx * 32), &tmp_done_vring, 32);
@@ -1066,15 +1083,28 @@ static void fill_queue_with_empty_packets(VFIOI40EDevice *vdev,
     }
 }
 
-static void dump_entry(PCIDevice *pdev, struct i40e_virtchnl_rxq_info *rxq, int idx)
+static void dump_rx_entry(PCIDevice *pdev, struct i40e_virtchnl_rxq_info *rxq,
+                          int idx)
 {
     union i40e_32byte_rx_desc vring = {
         .read.pkt_addr = 0,
     };
     hwaddr rxq_addr = rxq->dma_ring_addr;
-    pci_dma_read(pdev, rxq_addr + (idx* 32), &vring, 32);
-    DPRINTF_RX(" vring[%d | 0x%"PRIx64"] = 0x%"PRIx64" | 0x%"PRIx64,
+    pci_dma_read(pdev, rxq_addr + (idx * 32), &vring, 32);
+    DPRINTF_RX(" vring[0x%x | 0x%"PRIx64"] = 0x%"PRIx64" | 0x%"PRIx64,
                idx, rxq_addr, vring.read.pkt_addr, vring.read.hdr_addr);
+}
+
+static void dump_tx_entry(PCIDevice *pdev, struct i40e_virtchnl_txq_info *txq,
+                          int idx)
+{
+    union i40e_32byte_rx_desc vring = {
+        .read.pkt_addr = 0,
+    };
+    hwaddr txq_addr = txq->dma_ring_addr;
+    pci_dma_read(pdev, txq_addr + (idx * 16), &vring, 16);
+    DPRINTF_RX(" vring[0x%x | 0x%"PRIx64"] = 0x%"PRIx64" | 0x%"PRIx64,
+               idx, txq_addr, vring.read.pkt_addr, vring.read.hdr_addr);
 }
 
 static void vfio_i40evf_qrx_tail_region_write(void *opaque, hwaddr subaddr,
@@ -1085,6 +1115,7 @@ static void vfio_i40evf_qrx_tail_region_write(void *opaque, hwaddr subaddr,
     int idx = subaddr / (I40E_QRX_TAIL1(1) - I40E_QRX_TAIL1(0));
     uint32_t tail = data;
     uint32_t old_tail = vfio_i40evf_vr32(vdev, addr);
+    uint32_t probable_head = tail + 1;
     struct i40e_virtchnl_rxq_info *rxq = &vdev->vsi_config.qpair[idx].rxq;
     hwaddr rxq_addr = rxq->dma_ring_addr;
     PCIDevice *pdev = &vdev->parent_obj.pdev;
@@ -1099,36 +1130,43 @@ static void vfio_i40evf_qrx_tail_region_write(void *opaque, hwaddr subaddr,
         /*
          * We want to make sure that the guest believes that the head is at
          * offset 0. To get there, we inject "zero length complete" packets
-         * into all RX queue slots that the guest gives us until we reach the
-         * the first block that contains 0.
+         * into 0x10 RX queue slots after the tail + 1 (guest's view of head)
+         * that the guest gives us until we reach tail == end of queue the
+         * second time, telling us that the guest's head view is 0.
          */
 
         DPRINTF_RX(" Fast forward for queue %#x: %#x",
                    idx, vdev->qrx_fast_forward[idx]);
-dump_entry(pdev, rxq, 0);
-        if (tail != (rxq->ring_len - 1)) { //(tail + 0x11) <= rxq->ring_len) {
-            /* We're somewhere in between the queue, so let's declare all
-             * entries from the old tail to the new one as done to move on */
-            fill_queue_with_empty_packets(vdev, rxq, tail + 1,
-                                          (tail + 0x11) % rxq->ring_len);
+        if (0) {
+            dump_rx_entry(pdev, rxq, 0);
+        }
+        if (tail != (rxq->ring_len - 1)) {
+            /*
+             * We're somewhere inside the queue, so let's declare all entries
+             * from head (tail + 1) to end of queue as done to provoke the
+             * guest to move on in the queue.
+             */
+            fill_queue_with_empty_packets(vdev, rxq, probable_head,
+                                          rxq->ring_len);
         } else if (vdev->qrx_fast_forward[idx] == 2) {
             /*
              * We just had a wrap around. That means the new queue head is
-             * potentially at 0 now. But since we had to nuke all pointers
+             * most likely at 0 now. But since we had to nuke all pointers
              * from our queue, we need to go another round to make them
              * valid again.
              */
-            fill_queue_with_empty_packets(vdev, rxq, tail + 1,
-                                          (tail + 0x11) % rxq->ring_len);
+            fill_queue_with_empty_packets(vdev, rxq, tail,
+                                          rxq->ring_len);
             vdev->qrx_fast_forward[idx]--;
         } else if (vdev->qrx_fast_forward[idx] == 1) {
             /*
              * We just had a wrap around. That means the new queue head is
-             * potentially at 0 now. Because we went the extra round, all
+             * hopefully at 0 now. Because we went the extra round, all
              * queue items are now properly populated with correct addresses.
              * So we can pass control back to the guest now.
              */
-            fill_queue_with_empty_packets(vdev, rxq, tail + 1, rxq->ring_len);
+            fill_queue_with_empty_packets(vdev, rxq, probable_head,
+                                          rxq->ring_len);
             vdev->qrx_fast_forward[idx]--;
             vfio_i40evf_w32(vdev, addr, data);
 
@@ -1640,25 +1678,30 @@ static int vfio_msix_vector_use(PCIDevice *pdev,
 /*
  * We don't know where our RX queue head is, so we cheat a bit.
  * We know that our new head is at 0. So we inject a lot of
- * 0-length packet replies from [ 0 .. tail ].
+ * 0-length packet replies from [ 0 .. end ].
  *
  * Then we trap on every tail write and inject more 0-length packets
- * from [ old_tail .. new_tail ] until tail is 0xf the second time,
- * which tells us that 0 is now the head our guest expects to see
- * and all queue items are fully populated.
+ * from [ new_tail .. new_tail + 0x10 ] until tail is at the end of the
+ * queue for the second time, which tells us that 0 is now the head our
+ * guest expects to see and all queue items are fully populated.
  *
  * To make sure we're not incorrectly receiving data in between,
- * disable the queues by writing 0 into their real tail pointers.
+ * disable the queues by writing 0 into their real tail pointers which
+ * also provokes "queue overrun" messages to the guest, enabling the
+ * whole queue cleanup game to work.
  *
  * This is a hack, but works with Linux for now.
  */
 static void vfio_i40evf_forward_qrx_to_zero(VFIOI40EDevice *vdev, int idx)
 {
     struct i40e_virtchnl_rxq_info *rxq = &vdev->vsi_config.qpair[idx].rxq;
+    uint32_t old_tail = vfio_i40evf_vr32(vdev, I40E_QRX_TAIL1(idx));
+    uint32_t subaddr = (I40E_QRX_TAIL1(1) - I40E_QRX_TAIL1(0)) * idx;
 
     vfio_i40evf_w32(vdev, I40E_QRX_TAIL1(idx), 0);
     vdev->qrx_fast_forward[idx] = 2;
     fill_queue_with_empty_packets(vdev, rxq, 0, rxq->ring_len);
+    vfio_i40evf_qrx_tail_region_write(vdev, subaddr, old_tail, 4);
 }
 
 static void vfio_i40evf_enable_rx_tracking(VFIOI40EDevice *vdev)
@@ -1738,6 +1781,36 @@ static void vfio_i40evf_enable_rx_tracking(VFIOI40EDevice *vdev)
     /* XXX Resume all CPUs */
 }
 
+/*
+ * By setting the tail at the end of the queue we indicate to the card that
+ * we want all outstanding packets to be processed. That way packets that did
+ * not make it onto the wire before migrate get properly ACKed by hw and
+ * delivered into the network.
+ */
+static void vfio_i40evf_mark_qtx_as_done(VFIOI40EDevice *vdev, int idx)
+{
+    PCIDevice *pdev = PCI_DEVICE(vdev);
+    struct i40e_virtchnl_txq_info *txq = &vdev->vsi_config.qpair[idx].txq;
+    hwaddr txq_addr = txq->dma_ring_addr;
+    int i;
+    struct i40e_tx_desc vring = {
+        .cmd_type_offset_bsz = I40E_TX_DESC_DTYPE_NOP,
+    };
+
+    if (txq->headwb_enabled) {
+        uint32_t head = 0;
+        pci_dma_read(pdev, txq->dma_headwb_addr, &head, 4);
+        vfio_i40evf_w32(vdev, I40E_QTX_TAIL1(idx), head);
+    }
+
+    /* Set all TX entries as NOP entries so hw doesn't get confused */
+    DPRINTF_RX(" Dumping queue %d", idx);
+    for (i = 0; i < txq->ring_len; i++) {
+        pci_dma_write(pdev, txq_addr + (i * 16), &vring, 16);
+        dump_tx_entry(pdev, txq, i);
+    }
+}
+
 static int vfio_i40evf_load(void *opaque, int version_id)
 {
     VFIOI40EDevice *vdev = opaque;
@@ -1764,6 +1837,7 @@ static int vfio_i40evf_load(void *opaque, int version_id)
 
     for (i = 0; i < MIN(16, vdev->vsi_config.num_queue_pairs); i++) {
         vfio_i40evf_forward_qrx_to_zero(vdev, i);
+        vfio_i40evf_mark_qtx_as_done(vdev, i);
     }
 
     memory_region_add_subregion_overlap(&bar->region.mem, I40E_QRX_TAIL1(0),

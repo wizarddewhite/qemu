@@ -715,6 +715,25 @@ union i40e_32byte_rx_desc {
         } wb;  /* writeback */
 };
 
+/* TX Descriptor */
+struct i40e_tx_desc {
+        uint64_t buffer_addr; /* Address of descriptor's data buf */
+        uint64_t cmd_type_offset_bsz;
+};
+
+enum i40e_tx_desc_dtype_value {
+        I40E_TX_DESC_DTYPE_DATA         = 0x0,
+        I40E_TX_DESC_DTYPE_NOP          = 0x1, /* same as Context desc */
+        I40E_TX_DESC_DTYPE_CONTEXT      = 0x1,
+        I40E_TX_DESC_DTYPE_FCOE_CTX     = 0x2,
+        I40E_TX_DESC_DTYPE_FILTER_PROG  = 0x8,
+        I40E_TX_DESC_DTYPE_DDP_CTX      = 0x9,
+        I40E_TX_DESC_DTYPE_FLEX_DATA    = 0xB,
+        I40E_TX_DESC_DTYPE_FLEX_CTX_1   = 0xC,
+        I40E_TX_DESC_DTYPE_FLEX_CTX_2   = 0xD,
+        I40E_TX_DESC_DTYPE_DESC_DONE    = 0xF
+};
+
 /********************************************/
 
 typedef struct VFIOI40EDevice {
