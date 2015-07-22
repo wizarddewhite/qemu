@@ -45,7 +45,7 @@
 #include "hw/vfio/pci.h"
 #include "hw/vfio/i40evf.h"
 
-#define DEBUG_I40EVF
+//#define DEBUG_I40EVF
 
 #ifdef DEBUG_I40EVF
 static const int debug_i40evf = 1;
@@ -74,6 +74,8 @@ void vfio_disable_msix(VFIOPCIDevice *vdev);
 int vfio_msix_vector_do_use(PCIDevice *pdev, unsigned int nr,
                             MSIMessage *msg, IOHandler *handler);
 void vfio_msi_interrupt(void *opaque);
+static void vfio_i40evf_enable_queues(VFIOI40EDevice *vdev, PCIDevice *pdev,
+                                      struct i40e_virtchnl_queue_select *sel);
 
 static const char *vfio_i40evf_v_opcode_name(int reg)
 {
@@ -369,7 +371,7 @@ static void vfio_i40e_aq_map(VFIOI40EDevice *vdev)
         };
         *arq_cur = desc;
     }
-    vfio_i40evf_w32(vdev, I40E_VF_ARQT1, 1);
+    vfio_i40evf_w32(vdev, I40E_VF_ARQT1, vdev->aq_len - 1);
 }
 
 /*
@@ -535,11 +537,20 @@ static void vfio_i40e_atq_send(VFIOI40EDevice *vdev,
     int atq_offset = (I40E_AQ_LOCATION_ATQ - I40E_AQ_LOCATION);
     volatile I40eAdminQueueDescriptor *atq = vdev->admin_queue + atq_offset;
     volatile I40eAdminQueueDescriptor *atq_cur = &atq[atqt];
+    int i = 0;
 
     atqt = vfio_i40e_atq_send_nowait(vdev, req);
 
     /* Wait for completion */
-    while(vfio_i40evf_r32(vdev, I40E_VF_ATQH1) != atqt) usleep(5000);
+    while(vfio_i40evf_r32(vdev, I40E_VF_ATQH1) != atqt) {
+        if (i++ > 20) {
+            int arqlen = vfio_i40evf_r32(vdev, I40E_VF_ARQLEN1);
+            int atqlen = vfio_i40evf_r32(vdev, I40E_VF_ATQLEN1);
+            DPRINTF(" ATQLEN=0x%08x ARQLEN=0x%08x", atqlen, arqlen);
+            exit(1);
+        }
+        usleep(5000);
+    }
 
     /* Copy response into res */
     *res = *atq_cur;
@@ -748,6 +759,17 @@ static void vfio_i40e_print_aq_cmd(PCIDevice *pdev,
     g_free(data);
 }
 
+static void vfio_i40e_aq_reset_internal(VFIOI40EDevice *vdev)
+{
+    vdev->arq_ignore = 0;
+    vdev->arq_active = false;
+    vfio_i40evf_vw32(vdev, I40E_VF_ARQLEN1, 0);
+    vfio_i40evf_vw32(vdev, I40E_VF_ATQH1, 0);
+    vfio_i40evf_vw32(vdev, I40E_VF_ATQT1, 0);
+    vfio_i40evf_vw32(vdev, I40E_VF_ARQH1, 0);
+    vfio_i40evf_vw32(vdev, I40E_VF_ARQT1, 0);
+}
+
 static int vfio_i40e_record_atq_cmd(VFIOI40EDevice *vdev,
                                     PCIDevice *pdev,
                                     I40eAdminQueueDescriptor *desc)
@@ -757,14 +779,8 @@ static int vfio_i40e_record_atq_cmd(VFIOI40EDevice *vdev,
 
     if ((desc->opcode == I40E_AQC_OPC_SEND_MSG_TO_PF) &&
         (desc->cookie_high == I40E_VIRTCHNL_OP_RESET_VF)) {
-        vdev->arq_ignore = 0;
-        vdev->arq_active = false;
         vfio_i40evf_w32(vdev, I40E_VF_ATQT1, 0);
-        vfio_i40evf_vw32(vdev, I40E_VF_ARQLEN1, 0);
-        vfio_i40evf_vw32(vdev, I40E_VF_ATQH1, 0);
-        vfio_i40evf_vw32(vdev, I40E_VF_ATQT1, 0);
-        vfio_i40evf_vw32(vdev, I40E_VF_ARQH1, 0);
-        vfio_i40evf_vw32(vdev, I40E_VF_ARQT1, 0);
+        vfio_i40e_aq_reset_internal(vdev);
         vfio_i40e_atq_send_nowait(vdev, desc);
         return 1;
     }
@@ -844,6 +860,11 @@ static void vfio_i40e_atq_process_one(VFIOI40EDevice *vdev, int index)
 
     /* Notify guest that the request is finished */
     vfio_i40e_aq_inc(vdev, I40E_VF_ATQH1);
+
+    if (desc.opcode == 0x3) {
+        /* Reset request, sync our regs to reset here */
+        vfio_i40e_aq_reset_internal(vdev);
+    }
 }
 
 static void vfio_i40evf_arq_set_vsi_id(VFIOI40EDevice *vdev,
@@ -878,7 +899,8 @@ static void vfio_i40evf_arq_set_vsi_id(VFIOI40EDevice *vdev,
 
 /* Send one Admin Receive Queue Command to the guest */
 static void vfio_i40e_arq_recv(VFIOI40EDevice *vdev,
-                              I40eAdminQueueDescriptor *req)
+                              I40eAdminQueueDescriptor *req,
+                              int hwarqh)
 {
     PCIDevice *pdev = PCI_DEVICE(vdev);
     int arqh = vfio_i40evf_vr32(vdev, I40E_VF_ARQH1);
@@ -887,20 +909,31 @@ static void vfio_i40e_arq_recv(VFIOI40EDevice *vdev,
     uint32_t datalen;
     void *data = vdev->admin_queue +
                  (I40E_AQ_LOCATION_ARQ_DATA - I40E_AQ_LOCATION) +
-                 (I40E_ARQ_DATA_LEN * arqh);
+                 (I40E_ARQ_DATA_LEN * hwarqh);
     uint64_t data_addr;
 
     /* Fetch guest descriptor */
     pci_dma_read(pdev, addr, &guestdesc, sizeof(guestdesc));
     datalen = MIN(I40E_ARQ_DATA_LEN, guestdesc.datalen);
+    datalen = MIN(datalen, req->datalen);
+    req->datalen = MIN(datalen, req->datalen);
     data_addr = guestdesc.params.external.addr_high;
     data_addr <<= 32;
     data_addr |= guestdesc.params.external.addr_low;
 
+    if (req->params.external.addr_low || req->params.external.addr_high) {
+        req->params.external.addr_high = guestdesc.params.external.addr_high;
+        req->params.external.addr_low = guestdesc.params.external.addr_low;
+    }
+
     /* Copy command descriptor into guest */
     pci_dma_write(pdev, addr, req, sizeof(*req));
     /* Copy data payload */
+    DPRINTF(" Copying %#x bytes of payload to guest addr %#"PRIx64" (%x)",
+            datalen, data_addr, *(uint32_t*)data);
     pci_dma_write(pdev, data_addr, data, datalen);
+
+    vfio_i40e_print_aq_cmd(pdev, req, "ARQ guest request descriptor");
 
     /* Move the head one ahead */
     vfio_i40e_aq_inc(vdev, I40E_VF_ARQH1);
@@ -915,7 +948,6 @@ static void vfio_i40e_arq_process_one(VFIOI40EDevice *vdev, int hwarqh)
     volatile I40eAdminQueueDescriptor *arq = vdev->admin_queue + arq_offset;
     volatile I40eAdminQueueDescriptor *arq_cur = &arq[hwarqh];
     I40eAdminQueueDescriptor desc;
-    int arq_next;
 
     /* Read request */
     desc = *arq_cur;
@@ -929,12 +961,15 @@ static void vfio_i40e_arq_process_one(VFIOI40EDevice *vdev, int hwarqh)
     if (vdev->arq_ignore) {
         /* Internal ARQ packet, ignore it */
         vdev->arq_ignore--;
+        DPRINTF(" Ignoring ARQ packet");
     } else if (vdev->arq_fetch_vsi_id) {
         /* Packet containing our vsi id - use it to update our status */
+        DPRINTF(" Using ARQ packet to find our new VSI ID");
         vfio_i40evf_arq_set_vsi_id(vdev, pdev, &desc);
     } else {
         /* Copy command to guest */
-        vfio_i40e_arq_recv(vdev, &desc);
+        DPRINTF(" Copying ARQ into guest");
+        vfio_i40e_arq_recv(vdev, &desc, hwarqh);
     }
 
     /* Make record available for reuse */
@@ -942,9 +977,8 @@ static void vfio_i40e_arq_process_one(VFIOI40EDevice *vdev, int hwarqh)
     arq_cur->datalen = I40E_ARQ_DATA_LEN;
 
     /* Remember that we're done with the command */
-    vdev->arq_last = vfio_i40evf_r32(vdev, I40E_VF_ARQH1);
-    arq_next = (vdev->arq_last + 1) & (vdev->aq_len - 1);
-    vfio_i40evf_w32(vdev, I40E_VF_ARQT1, arq_next);
+    vdev->arq_last = (hwarqh + 1) % vdev->aq_len; //vfio_i40evf_r32(vdev, I40E_VF_ARQH1);
+    vfio_i40evf_w32(vdev, I40E_VF_ARQT1, hwarqh);
 }
 
 static void vfio_i40e_aq_update(VFIOI40EDevice *vdev)
@@ -1137,8 +1171,10 @@ static void vfio_i40evf_qrx_tail_region_write(void *opaque, hwaddr subaddr,
 
         DPRINTF_RX(" Fast forward for queue %#x: %#x",
                    idx, vdev->qrx_fast_forward[idx]);
-        if (0) {
-            dump_rx_entry(pdev, rxq, 0);
+        if (1) {
+            for (i = 0; i < 0x11; i++) {
+                dump_rx_entry(pdev, rxq, i);
+            }
         }
         if (tail != (rxq->ring_len - 1)) {
             /*
@@ -1155,8 +1191,7 @@ static void vfio_i40evf_qrx_tail_region_write(void *opaque, hwaddr subaddr,
              * from our queue, we need to go another round to make them
              * valid again.
              */
-            fill_queue_with_empty_packets(vdev, rxq, tail,
-                                          rxq->ring_len);
+            fill_queue_with_empty_packets(vdev, rxq, 0, rxq->ring_len);
             vdev->qrx_fast_forward[idx]--;
         } else if (vdev->qrx_fast_forward[idx] == 1) {
             /*
@@ -1233,7 +1268,7 @@ static uint64_t vfio_i40evf_aq_mmio_mem_region_read(void *opaque,
 {
     hwaddr addr = subaddr + I40E_VF_ARQBAH1;
     VFIOI40EDevice *vdev = opaque;
-    uint32_t val;
+    uint32_t val, val2, mask;
 
     DPRINTF(" -> %s %#x", vfio_i40evf_reg_name(addr), size);
     assert(size == 4);
@@ -1242,14 +1277,22 @@ static uint64_t vfio_i40evf_aq_mmio_mem_region_read(void *opaque,
     case I40E_VF_ARQBAH1:
     case I40E_VF_ARQBAL1:
     case I40E_VF_ARQH1:
-    case I40E_VF_ARQLEN1:
     case I40E_VF_ARQT1:
     case I40E_VF_ATQBAH1:
     case I40E_VF_ATQBAL1:
     case I40E_VF_ATQH1:
-    case I40E_VF_ATQLEN1:
     case I40E_VF_ATQT1:
         val = vfio_i40evf_vr32(vdev, addr);
+        break;
+    case I40E_VF_ARQLEN1:
+    case I40E_VF_ATQLEN1:
+        /* Get the error codes from hardware */
+        mask = I40E_VF_ATQLEN1_ATQVFE_MASK |
+               I40E_VF_ATQLEN1_ATQOVFL_MASK |
+               I40E_VF_ATQLEN1_ATQCRIT_MASK;
+        val = vfio_i40evf_vr32(vdev, addr) & ~mask;
+        val2 = vfio_i40evf_r32(vdev, addr) & mask;
+        val = val | val2;
         break;
     default:
         val = vfio_i40evf_r32(vdev, addr);
@@ -1309,12 +1352,6 @@ static const uint32_t vfio_i40evf_migration_reg_list[] = {
     I40E_VFQF_HLUT(8), I40E_VFQF_HLUT(9), I40E_VFQF_HLUT(10),
     I40E_VFQF_HLUT(11), I40E_VFQF_HLUT(12), I40E_VFQF_HLUT(13),
     I40E_VFQF_HLUT(14), I40E_VFQF_HLUT(15),
-
-    I40E_QRX_TAIL1(0), I40E_QRX_TAIL1(1), I40E_QRX_TAIL1(2), I40E_QRX_TAIL1(3),
-    I40E_QRX_TAIL1(4), I40E_QRX_TAIL1(5), I40E_QRX_TAIL1(6), I40E_QRX_TAIL1(7),
-    I40E_QRX_TAIL1(8), I40E_QRX_TAIL1(9), I40E_QRX_TAIL1(10),
-    I40E_QRX_TAIL1(11), I40E_QRX_TAIL1(12), I40E_QRX_TAIL1(13),
-    I40E_QRX_TAIL1(14), I40E_QRX_TAIL1(15),
 
     I40E_VFINT_DYN_CTL01, I40E_VFINT_ICR0_ENA1,
 };
@@ -1587,7 +1624,7 @@ static void vfio_i40evf_enable_queues(VFIOI40EDevice *vdev, PCIDevice *pdev,
     vfio_i40e_print_aq_cmd(pdev, &desc, "ATQ ENABLE QUEUES");
     vfio_i40e_atq_send(vdev, &desc, &resp);
     vfio_i40e_print_aq_cmd(pdev, &resp, "ATQ ENABLE QUEUES response");
-    vdev->arq_ignore++;
+    vdev->arq_ignore += 2;
     vfio_i40e_aq_update(vdev);
 }
 
@@ -1695,13 +1732,14 @@ static int vfio_msix_vector_use(PCIDevice *pdev,
 static void vfio_i40evf_forward_qrx_to_zero(VFIOI40EDevice *vdev, int idx)
 {
     struct i40e_virtchnl_rxq_info *rxq = &vdev->vsi_config.qpair[idx].rxq;
-    uint32_t old_tail = vfio_i40evf_vr32(vdev, I40E_QRX_TAIL1(idx));
+    uint32_t old_tail = 0; //vfio_i40evf_vr32(vdev, I40E_QRX_TAIL1(idx));
     uint32_t subaddr = (I40E_QRX_TAIL1(1) - I40E_QRX_TAIL1(0)) * idx;
 
     vfio_i40evf_w32(vdev, I40E_QRX_TAIL1(idx), 0);
+    vfio_i40evf_vw32(vdev, I40E_QRX_TAIL1(idx), 0);
     vdev->qrx_fast_forward[idx] = 2;
-    fill_queue_with_empty_packets(vdev, rxq, 0, rxq->ring_len);
     vfio_i40evf_qrx_tail_region_write(vdev, subaddr, old_tail, 4);
+    fill_queue_with_empty_packets(vdev, rxq, 0, rxq->ring_len);
 }
 
 static void vfio_i40evf_enable_rx_tracking(VFIOI40EDevice *vdev)
@@ -1793,22 +1831,40 @@ static void vfio_i40evf_mark_qtx_as_done(VFIOI40EDevice *vdev, int idx)
     struct i40e_virtchnl_txq_info *txq = &vdev->vsi_config.qpair[idx].txq;
     hwaddr txq_addr = txq->dma_ring_addr;
     int i;
+    /* Dummy TX entry, not going onto the wire */
+    struct i40e_tx_desc vring_nowrite = {
+        .buffer_addr = vdev->tmp_addr,
+        .cmd_type_offset_bsz = 0xa800000150,
+    };
     struct i40e_tx_desc vring = {
-        .cmd_type_offset_bsz = I40E_TX_DESC_DTYPE_NOP,
+        .buffer_addr = vdev->tmp_addr,
+        .cmd_type_offset_bsz = 0xa800000050,
+    };
+    /* An ARP request packet that tells the world we're there */
+    uint8_t pkt[] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x08, 0x06, 0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xc0, 0xa8, 0x64, 0x03, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xc0, 0xa8, 0x64, 0x01,
     };
 
-    if (txq->headwb_enabled) {
-        uint32_t head = 0;
-        pci_dma_read(pdev, txq->dma_headwb_addr, &head, 4);
-        vfio_i40evf_w32(vdev, I40E_QTX_TAIL1(idx), head);
-    }
+    memcpy(&pkt[6], &vdev->addr.list[0].addr, 6);
+    memcpy(&pkt[22], &vdev->addr.list[0].addr, 6);
+
+    /* Put the packet into our scratch space */
+    pci_dma_write(pdev, vdev->tmp_addr, pkt, sizeof(pkt));
 
     /* Set all TX entries as NOP entries so hw doesn't get confused */
     DPRINTF_RX(" Dumping queue %d", idx);
-    for (i = 0; i < txq->ring_len; i++) {
-        pci_dma_write(pdev, txq_addr + (i * 16), &vring, 16);
+    for (i = 1; i < txq->ring_len; i++) {
+        dump_tx_entry(pdev, txq, i);
+        pci_dma_write(pdev, txq_addr + (i * 16), &vring_nowrite, 16);
         dump_tx_entry(pdev, txq, i);
     }
+
+    /* Send one ARP request out */
+    pci_dma_write(pdev, txq_addr, &vring, 16);
+    vfio_i40evf_w32(vdev, I40E_QTX_TAIL1(idx), 1);
 }
 
 static int vfio_i40evf_load(void *opaque, int version_id)
@@ -1837,7 +1893,6 @@ static int vfio_i40evf_load(void *opaque, int version_id)
 
     for (i = 0; i < MIN(16, vdev->vsi_config.num_queue_pairs); i++) {
         vfio_i40evf_forward_qrx_to_zero(vdev, i);
-        vfio_i40evf_mark_qtx_as_done(vdev, i);
     }
 
     memory_region_add_subregion_overlap(&bar->region.mem, I40E_QRX_TAIL1(0),
@@ -1866,6 +1921,12 @@ static int vfio_i40evf_load(void *opaque, int version_id)
     vfio_i40evf_add_eth_addr(vdev, pdev, &vdev->addr);
     vfio_i40evf_config_queues(vdev, pdev, &vdev->vsi_config);
     vfio_i40evf_enable_queues(vdev, pdev, &vdev->queue_select);
+
+    for (i = 0; i < MIN(16, vdev->vsi_config.num_queue_pairs); i++) {
+        /* We need to send something with our MAC into the wire, otherwise
+         * nobody knows we're here */
+        vfio_i40evf_mark_qtx_as_done(vdev, i);
+    }
 
     /* XXX hack to verify whether things work! */
 if(0)
