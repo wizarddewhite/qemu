@@ -542,7 +542,7 @@ static void vfio_i40e_atq_send(VFIOI40EDevice *vdev,
     atqt = vfio_i40e_atq_send_nowait(vdev, req);
 
     /* Wait for completion */
-    while(vfio_i40evf_r32(vdev, I40E_VF_ATQH1) != atqt) {
+    while (vfio_i40evf_r32(vdev, I40E_VF_ATQH1) != atqt) {
         if (i++ > 20) {
             int arqlen = vfio_i40evf_r32(vdev, I40E_VF_ARQLEN1);
             int atqlen = vfio_i40evf_r32(vdev, I40E_VF_ATQLEN1);
