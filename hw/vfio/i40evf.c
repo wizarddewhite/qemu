@@ -62,7 +62,7 @@ static const int debug_i40evf = 0;
     } while (0)
 
 #define DPRINTF_RX(fmt, ...) do { \
-        if (debug_i40evf) { \
+        if (1) { \
             printf("i40evf: %38s:%04d" fmt "\n" , \
                    __func__, __LINE__, ## __VA_ARGS__); \
         } \
@@ -74,8 +74,7 @@ void vfio_disable_msix(VFIOPCIDevice *vdev);
 int vfio_msix_vector_do_use(PCIDevice *pdev, unsigned int nr,
                             MSIMessage *msg, IOHandler *handler);
 void vfio_msi_interrupt(void *opaque);
-static void vfio_i40evf_enable_queues(VFIOI40EDevice *vdev, PCIDevice *pdev,
-                                      struct i40e_virtchnl_queue_select *sel);
+static void vfio_i40evf_enable_rx_tracking(VFIOI40EDevice *vdev);
 
 static const char *vfio_i40evf_v_opcode_name(int reg)
 {
@@ -1038,20 +1037,6 @@ static void vfio_i40evf_mmio_mem_region_write(void *opaque, hwaddr addr,
 
     DPRINTF(" -> %s %#x %#lx", vfio_i40evf_reg_name(addr), size, data);
     assert(size == 4);
-if ((addr == I40E_QTX_TAIL1(0) || addr == I40E_QTX_TAIL1(1))) {
-    PCIDevice *pdev = PCI_DEVICE(vdev);
-    struct i40e_virtchnl_txq_info *txq = &vdev->vsi_config.qpair[0].txq;
-    int i;
-    if (txq->headwb_enabled) {
-        uint32_t head = 0;
-        pci_dma_read(pdev, txq->dma_headwb_addr, &head, 4);
-        DPRINTF(" -> head = %#x", head);
-    }
-    for (i = 0; i < txq->ring_len; i++) {
-        dump_tx_entry(pdev, txq, i);
-    }
-    if (0) return;
-}
     vfio_i40evf_w32(vdev, addr, data);
 }
 
@@ -1090,9 +1075,6 @@ static void fill_empty_packet(VFIOI40EDevice *vdev, PCIDevice *pdev,
                                       I40E_RXQ_STATUS_EOF,
     };
 
-if (0)
-    DPRINTF_RX(" Filling zero packet at idx %#x of queue %#"PRIx64,
-               idx, rxq_addr);
     pci_dma_write(pdev, rxq_addr + (idx * 32), &tmp_done_vring, 32);
 }
 
@@ -1117,16 +1099,24 @@ static void fill_queue_with_empty_packets(VFIOI40EDevice *vdev,
     }
 }
 
-static void dump_rx_entry(PCIDevice *pdev, struct i40e_virtchnl_rxq_info *rxq,
-                          int idx)
+static union i40e_32byte_rx_desc read_rx_entry(
+    PCIDevice *pdev, struct i40e_virtchnl_rxq_info *rxq, int idx)
 {
     union i40e_32byte_rx_desc vring = {
         .read.pkt_addr = 0,
     };
     hwaddr rxq_addr = rxq->dma_ring_addr;
-    pci_dma_read(pdev, rxq_addr + (idx * 32), &vring, 32);
-    DPRINTF_RX(" vring[0x%x | 0x%"PRIx64"] = 0x%"PRIx64" | 0x%"PRIx64,
-               idx, rxq_addr, vring.read.pkt_addr, vring.read.hdr_addr);
+
+    if (debug_i40evf) {
+        pci_dma_read(pdev, rxq_addr + (idx * 32), &vring, 32);
+    }
+    return vring;
+}
+
+static void dump_rx_entry(int idx, union i40e_32byte_rx_desc vring)
+{
+    DPRINTF_RX(" vring[0x%x] = 0x%"PRIx64" | 0x%"PRIx64,
+               idx, vring.read.pkt_addr, vring.read.hdr_addr);
 }
 
 static void dump_tx_entry(PCIDevice *pdev, struct i40e_virtchnl_txq_info *txq,
@@ -1173,7 +1163,7 @@ static void vfio_i40evf_qrx_tail_region_write(void *opaque, hwaddr subaddr,
                    idx, vdev->qrx_fast_forward[idx]);
         if (1) {
             for (i = 0; i < 0x11; i++) {
-                dump_rx_entry(pdev, rxq, i);
+                dump_rx_entry(idx, read_rx_entry(pdev, rxq, i));
             }
         }
         if (tail != (rxq->ring_len - 1)) {
@@ -1222,6 +1212,7 @@ static void vfio_i40evf_qrx_tail_region_write(void *opaque, hwaddr subaddr,
                 VFIOBAR *bar = &vpdev->bars[0];
 
                 DPRINTF_RX(" Removing tail trap");
+printf(" Removing tail trap\n");
                 memory_region_del_subregion(&bar->region.mem,
                                             &vdev->qrx_tail_mem);
             }
@@ -1360,60 +1351,9 @@ static void vfio_i40evf_start_migration(const MigrationParams *params,
                                         void *opaque)
 {
     VFIOI40EDevice *vdev = opaque;
-    void *data = vdev->admin_queue +
-                 (I40E_AQ_LOCATION_ATQ_DATA - I40E_AQ_LOCATION);
-    volatile struct i40e_virtchnl_queue_select *mydata = data;
-    I40eAdminQueueDescriptor desc = {
-        .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
-        .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
-        .datalen = sizeof(struct i40e_virtchnl_queue_select),
-        .cookie_high = I40E_VIRTCHNL_OP_DISABLE_QUEUES,
-        .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
-        .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
-    };
-    int i;
 
-    /* Process anything that's still dangling */
-    vfio_i40e_aq_update(vdev);
-
-    /* Stop VF queues */
-    *mydata = vdev->queue_select;
-    vfio_i40e_atq_send(vdev, &desc, &desc);
-    vdev->arq_ignore++;
-    vfio_i40e_aq_update(vdev);
-
-    /* Read registers */
-    for (i = 0; i < (ARRAY_SIZE(vfio_i40evf_migration_reg_list)); i++) {
-        int reg = vfio_i40evf_migration_reg_list[i];
-        uint32_t val = vfio_i40evf_r32(vdev, reg);
-
-        switch (reg) {
-        case I40E_QRX_TAIL1(0):
-        case I40E_QRX_TAIL1(1):
-        case I40E_QRX_TAIL1(2):
-        case I40E_QRX_TAIL1(3):
-        case I40E_QRX_TAIL1(4):
-        case I40E_QRX_TAIL1(5):
-        case I40E_QRX_TAIL1(6):
-        case I40E_QRX_TAIL1(7):
-        case I40E_QRX_TAIL1(8):
-        case I40E_QRX_TAIL1(9):
-        case I40E_QRX_TAIL1(10):
-        case I40E_QRX_TAIL1(11):
-        case I40E_QRX_TAIL1(12):
-        case I40E_QRX_TAIL1(13):
-        case I40E_QRX_TAIL1(14):
-        case I40E_QRX_TAIL1(15):
-            /* At least the card I was working on always gave me the tail
-             * pointer without the lower bits set. Fix it up */
-            if (val & ~0x7) {
-                val |= 0x7;
-            }
-            break;
-        }
-
-        vfio_i40evf_vw32(vdev, reg, val);
-    }
+    /* Enable RX tracking to dirty potentially used pages */
+    vfio_i40evf_enable_rx_tracking(vdev);
 }
 
 static int vfio_i40evf_load(void *opaque, int version_id);
@@ -1650,12 +1590,33 @@ static void vfio_i40evf_msi_interrupt(void *opaque)
         hwaddr addr = rxq->dma_ring_addr;
         int tail = vfio_i40evf_vr32(vdev, I40E_QRX_TAIL1(i));
         int head = vdev->ring_head[i];
-        int qlen = (head < tail) ? (tail - head) :
-                                   (rxq->ring_len - (head - tail));
-        hwaddr len = qlen * 32;
-        union i40e_32byte_rx_desc guest_ring[qlen];
+        int qlen;
+        hwaddr len;
+        union i40e_32byte_rx_desc *guest_ring;
         int j;
         int cur_idx = 0;
+
+        /* Is this the first pass and we don't know where head is yet? */
+        if (head == -1) {
+            for (j = 0; j < rxq->ring_len; j++) {
+                union i40e_32byte_rx_desc *cur_ring = &ring[j];
+                dump_rx_entry(j, *cur_ring);
+                if (cur_ring->wb.qword1.status_error_len & I40E_RXQ_STATUS_DD) {
+                    head = vdev->ring_head[i] = j;
+                    DPRINTF_RX(" Found new head: %#x", j);
+                    break;
+                }
+            }
+        }
+
+        if (head == -1) {
+            /* No packet for this queue arrived yet */
+            continue;
+        }
+
+        qlen = (head < tail) ? (tail - head) : (rxq->ring_len - (head - tail));
+        len = qlen * sizeof(*guest_ring);
+        guest_ring = alloca(len);
 
         /* Read the guest queue for our current region so that we know
          * which addresses the buffers should be at */
@@ -1732,7 +1693,7 @@ static int vfio_msix_vector_use(PCIDevice *pdev,
 static void vfio_i40evf_forward_qrx_to_zero(VFIOI40EDevice *vdev, int idx)
 {
     struct i40e_virtchnl_rxq_info *rxq = &vdev->vsi_config.qpair[idx].rxq;
-    uint32_t old_tail = 0; //vfio_i40evf_vr32(vdev, I40E_QRX_TAIL1(idx));
+    uint32_t old_tail = 0;
     uint32_t subaddr = (I40E_QRX_TAIL1(1) - I40E_QRX_TAIL1(0)) * idx;
 
     vfio_i40evf_w32(vdev, I40E_QRX_TAIL1(idx), 0);
@@ -1794,16 +1755,16 @@ static void vfio_i40evf_enable_rx_tracking(VFIOI40EDevice *vdev)
         struct i40e_virtchnl_rxq_info *rxq = &vdev->vsi_config.qpair[i].rxq;
         union i40e_32byte_rx_desc *vring = ring;
 
-        vdev->vring[i] = vring;
+        /* Copy the guest's ring into our shadow */
+        pci_dma_read(pdev, rxq->dma_ring_addr, vring, rxq->ring_len * 32);
+
+        /* We don't know where the guest head is, so let's wait for the first
+           packet to arrive which will tell us */
+        vdev->ring_head[i] = -1;
+
+        /* Move on to the next ring */
         ring += rxq->ring_len * 32;
-
-        /* Use our RX fast forward code to make sure the head is at 0 */
-        vfio_i40evf_forward_qrx_to_zero(vdev, i);
-        vdev->ring_head[i] = 0;
     }
-
-    memory_region_add_subregion_overlap(&bar->region.mem, I40E_QRX_TAIL1(0),
-                                        &vdev->qrx_tail_mem, 29);
 
     /* Set the card to use our queues */
     vfio_i40evf_config_queues(vdev, pdev, vsi);
@@ -1928,10 +1889,6 @@ static int vfio_i40evf_load(void *opaque, int version_id)
         vfio_i40evf_mark_qtx_as_done(vdev, i);
     }
 
-    /* XXX hack to verify whether things work! */
-if(0)
-    vfio_i40evf_enable_rx_tracking(vdev);
-
     DPRINTF("");
     return 0;
 }
@@ -1939,16 +1896,45 @@ if(0)
 static void vfio_i40evf_save(void *opaque)
 {
     VFIOI40EDevice *vdev = opaque;
+    void *data = vdev->admin_queue +
+                 (I40E_AQ_LOCATION_ATQ_DATA - I40E_AQ_LOCATION);
+    volatile struct i40e_virtchnl_queue_select *mydata = data;
+    int i;
 
     DPRINTF("");
-    I40eAdminQueueDescriptor desc = {
+    I40eAdminQueueDescriptor desc_stop = {
+        .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
+        .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
+        .datalen = sizeof(struct i40e_virtchnl_queue_select),
+        .cookie_high = I40E_VIRTCHNL_OP_DISABLE_QUEUES,
+        .params.external.addr_high = I40E_AQ_LOCATION_ATQ_DATA >> 32,
+        .params.external.addr_low = (uint32_t)I40E_AQ_LOCATION_ATQ_DATA,
+    };
+    I40eAdminQueueDescriptor desc_reset = {
         .flags = I40E_AQ_FLAG_SI | I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD,
         .opcode = I40E_AQC_OPC_SEND_MSG_TO_PF,
         .cookie_high = I40E_VIRTCHNL_OP_RESET_VF,
     };
 
+    /* Process anything that's still dangling */
+    vfio_i40e_aq_update(vdev);
+
+    /* Stop VF queues */
+    *mydata = vdev->queue_select;
+    vfio_i40e_atq_send(vdev, &desc_stop, &desc_stop);
+    vdev->arq_ignore++;
+    vfio_i40e_aq_update(vdev);
+
+    /* Read registers */
+    for (i = 0; i < (ARRAY_SIZE(vfio_i40evf_migration_reg_list)); i++) {
+        int reg = vfio_i40evf_migration_reg_list[i];
+        uint32_t val = vfio_i40evf_r32(vdev, reg);
+
+        vfio_i40evf_vw32(vdev, reg, val);
+    }
+
     /* Destroy real VF, freeing up the mac address */
-    vfio_i40e_atq_send(vdev, &desc, &desc);
+    vfio_i40e_atq_send(vdev, &desc_reset, &desc_reset);
 }
 
 static const VMStateDescription vmstate_vector_map = {
