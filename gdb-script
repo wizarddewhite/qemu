@@ -1,0 +1,35 @@
+define __dump_memory_region
+  set $indent = $arg1
+  while $indent
+    printf "  "
+    set $indent = $indent - 1
+  end
+
+  printf "[%016x-%016x%016x]:%s\n", $arg0->addr, \
+          *((unsigned long long*)&$arg0->size + 1) ,*(unsigned long long*)&$arg0->size, \
+          $arg0->name
+end
+
+# recursive version
+define __dump_memory_regions
+  # dump itself
+  __dump_memory_region $arg0 $arg1
+  set $subregion_$arg0 = $arg0->subregions.tqh_first
+
+  # dump subregions
+  while $subregion_$arg0
+    __dump_memory_regions $subregion_$arg0 $arg1+1
+    set $subregion_$arg0 = $subregion_$arg0->subregions_link.tqe_next
+  end
+end
+
+define dump_memory_region
+  printf "Dump MemoryRegion:%s\n", $arg0->name
+  __dump_memory_regions $arg0 0
+end
+
+document dump_memory_region
+Dump a memory region info:
+
+    dump_memory_region system_memory
+end
