@@ -48,3 +48,14 @@ define dump_flatview
     set $i = $i + 1
   end
 end
+
+define dump_address_spaces
+  set $as = address_spaces.tqh_first
+  while $as
+    printf "%s\n", $as->name
+    if $arg0 && $as->root
+      __dump_memory_region $as->root 1
+    end
+    set $as = $as->address_spaces_link.tqe_next
+  end
+end
