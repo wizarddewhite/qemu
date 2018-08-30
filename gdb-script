@@ -5,8 +5,9 @@ define __dump_memory_region
     set $indent = $indent - 1
   end
 
-  printf "[%016x-%016x%016x]:%s\n", $arg0->addr, \
-          *((unsigned long long*)&$arg0->size + 1) ,*(unsigned long long*)&$arg0->size, \
+  printf "[%016x-%x%016x]:%s\n", $arg0->addr, \
+          *((unsigned long long*)&$arg0->size + 1) , \
+          $arg0->addr + *(unsigned long long*)&$arg0->size, \
           $arg0->name
 end
 
