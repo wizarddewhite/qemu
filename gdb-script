@@ -34,3 +34,17 @@ Dump a memory region info:
 
     dump_memory_region system_memory
 end
+
+define dump_flatview
+  set $i = 0
+  while $i < $arg0->nr
+    printf "[%x%016x-%x%016x], offset %016x\n", \
+	    *((unsigned long long*)&$arg0->ranges[$i].addr.start + 1), \
+	    *(unsigned long long*)&$arg0->ranges[$i].addr.start, \
+	    *((unsigned long long*)&$arg0->ranges[$i].addr.size + 1), \
+	    *(unsigned long long*)&$arg0->ranges[$i].addr.start + *(unsigned long long*)&$arg0->ranges[$i].addr.size, \
+            $arg0->ranges[$i].offset_in_region
+
+    set $i = $i + 1
+  end
+end
