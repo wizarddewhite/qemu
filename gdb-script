@@ -5,10 +5,11 @@ define __dump_memory_region
     set $indent = $indent - 1
   end
 
-  printf "[%016x-%x%016x]:%s\n", $arg0->addr, \
-          *((unsigned long long*)&$arg0->size + 1) , \
-          $arg0->addr + *(unsigned long long*)&$arg0->size, \
-          $arg0->name
+  set $mr_dump = (MemoryRegion*)$arg0
+  printf "[%016x-%x%016x]:%s\n", $mr_dump->addr, \
+          *((unsigned long long*)&$mr_dump->size + 1) , \
+          $mr_dump->addr + *(unsigned long long*)&$mr_dump->size, \
+          $mr_dump->name
 end
 
 # recursive version
@@ -25,8 +26,9 @@ define __dump_memory_regions
 end
 
 define dump_memory_region
-  printf "Dump MemoryRegion:%s\n", $arg0->name
-  __dump_memory_regions $arg0 0
+  set $root_mr = (MemoryRegion*)$arg0
+  printf "Dump MemoryRegion:%s\n", $root_mr->name
+  __dump_memory_regions $root_mr 0
 end
 
 document dump_memory_region
