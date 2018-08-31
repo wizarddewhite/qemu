@@ -58,14 +58,15 @@ Dump a memory region info:
 end
 
 define dump_flatview
+  set $fv = (FlatView*)$arg0
   set $i = 0
-  while $i < $arg0->nr
-    printf "[%x%016x-%x%016x], offset %016x\n", \
-	    *((unsigned long long*)&$arg0->ranges[$i].addr.start + 1), \
-	    *(unsigned long long*)&$arg0->ranges[$i].addr.start, \
-	    *((unsigned long long*)&$arg0->ranges[$i].addr.size + 1), \
-	    *(unsigned long long*)&$arg0->ranges[$i].addr.start + *(unsigned long long*)&$arg0->ranges[$i].addr.size, \
-            $arg0->ranges[$i].offset_in_region
+  while $i < $fv->nr
+    printf "[%x%016x-%x%016x], offset_in_region %016x\n", \
+	    *((unsigned long long*)&$fv->ranges[$i].addr.start + 1), \
+	    *(unsigned long long*)&$fv->ranges[$i].addr.start, \
+	    *((unsigned long long*)&$fv->ranges[$i].addr.size + 1), \
+	    *(unsigned long long*)&$fv->ranges[$i].addr.start + *(unsigned long long*)&$fv->ranges[$i].addr.size, \
+            $fv->ranges[$i].offset_in_region
 
     set $i = $i + 1
   end
@@ -74,9 +75,11 @@ end
 define dump_address_spaces
   set $as = address_spaces.tqh_first
   while $as
-    printf "%s\n", $as->name
-    if $arg0 && $as->root
-      __dump_memory_region $as->root 1
+    printf "AddressSpace : %s(%p)\n", $as->name, $as
+    if $arg0 == 1 && $as->root
+      __dump_memory_regions $as->root 0
+    else
+      printf "    FlatView : %p\n", $as->current_map
     end
     set $as = $as->address_spaces_link.tqe_next
   end
