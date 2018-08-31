@@ -12,16 +12,36 @@ define __dump_memory_region
           $mr_dump->name
 end
 
-# recursive version
 define __dump_memory_regions
-  # dump itself
-  __dump_memory_region $arg0 $arg1
-  set $subregion_$arg0 = $arg0->subregions.tqh_first
+  set $pmr = (MemoryRegion*)$arg0
+  __dump_memory_region $pmr $arg1
+  set $level = $arg1 + 1
 
-  # dump subregions
-  while $subregion_$arg0
-    __dump_memory_regions $subregion_$arg0 $arg1+1
-    set $subregion_$arg0 = $subregion_$arg0->subregions_link.tqe_next
+  set $pmr = $pmr->subregions.tqh_first
+  while $pmr != $arg0
+    __dump_memory_region $pmr $level
+
+    # iterate chile if has
+    if $pmr->subregions.tqh_first
+      set $level = $level + 1
+      set $pmr = $pmr->subregions.tqh_first
+    # iterate sibling if has
+    else
+      if $pmr->subregions_link.tqe_next
+      set $pmr = $pmr->subregions_link.tqe_next
+      # go back to uncle
+      else
+        while $pmr->container
+          set $level = $level - 1
+          if $pmr->container->subregions_link.tqe_next
+            set $pmr = $pmr->container->subregions_link.tqe_next
+            loop_break
+          else
+            set $pmr = $pmr->container
+          end
+        end
+      end
+    end
   end
 end
 
