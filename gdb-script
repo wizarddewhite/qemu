@@ -79,6 +79,7 @@ define dump_address_spaces
     if $arg0 == 1 && $as->root
       __dump_memory_regions $as->root 0
     else
+      printf "     Root MR : %p\n", $as->root
       printf "    FlatView : %p\n", $as->current_map
     end
     set $as = $as->address_spaces_link.tqe_next
