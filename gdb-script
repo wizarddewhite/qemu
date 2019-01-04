@@ -52,9 +52,12 @@ define dump_memory_region
 end
 
 document dump_memory_region
-Dump a memory region info:
+Dump a MemoryRegion: dump_memory_region SYM|ADDRESS
 
-    dump_memory_region system_memory
+Example:
+
+dump_memory_region system_memory
+dump_memory_region 0x5555565036a0
 end
 
 define dump_flatview
@@ -72,6 +75,14 @@ define dump_flatview
   end
 end
 
+document dump_flatview
+Dump a FlatView: dump_flatview ADDRESS
+
+Example:
+
+dump_memory_region 0x555556675be0
+end
+
 define dump_address_spaces
   set $as = address_spaces.tqh_first
   while $as
@@ -84,4 +95,13 @@ define dump_address_spaces
     end
     set $as = $as->address_spaces_link.tqe_next
   end
+end
+
+document dump_address_spaces
+Dump a AddressSpace: dump_address_spaces 0|1
+
+Example:
+
+dump_address_spaces 0
+dump_address_spaces 1
 end
