@@ -9,6 +9,7 @@ source scripts/qemu-gdb.py
 
 file x86_64-softmmu/qemu-system-x86_64
 set args -nographic
+handle SIGUSR1 nostop noprint
 source gdb-script
 b pc_memory_init
 r
