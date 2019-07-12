@@ -444,32 +444,6 @@ out:
 }
 
 /*
- * Setup an area of RAM so that it *can* be used for postcopy later; this
- * must be done right at the start prior to pre-copy.
- * opaque should be the MIS.
- */
-static int init_range(RAMBlock *rb, void *opaque)
-{
-    const char *block_name = qemu_ram_get_idstr(rb);
-    void *host_addr = qemu_ram_get_host_addr(rb);
-    ram_addr_t offset = qemu_ram_get_offset(rb);
-    ram_addr_t length = qemu_ram_get_used_length(rb);
-    trace_postcopy_init_range(block_name, host_addr, offset, length);
-
-    /*
-     * We need the whole of RAM to be truly empty for postcopy, so things
-     * like ROMs and any data tables built during init must be zero'd
-     * - we're going to get the copy from the source anyway.
-     * (Precopy will just overwrite this data, so doesn't need the discard)
-     */
-    if (ram_discard_range(block_name, 0, length)) {
-        return -1;
-    }
-
-    return 0;
-}
-
-/*
  * At the end of migration, undo the effects of init_range
  * opaque should be the MIS.
  */
@@ -500,20 +474,6 @@ static int cleanup_range(RAMBlock *rb, void *opaque)
     if (ioctl(mis->userfault_fd, UFFDIO_UNREGISTER, &range_struct)) {
         error_report("%s: userfault unregister %s", __func__, strerror(errno));
 
-        return -1;
-    }
-
-    return 0;
-}
-
-/*
- * Initialise postcopy-ram, setting the RAM to a state where we can go into
- * postcopy later; must be called prior to any precopy.
- * called from arch_init's similarly named ram_postcopy_incoming_init
- */
-int postcopy_ram_incoming_init(MigrationIncomingState *mis)
-{
-    if (foreach_not_ignored_block(init_range, NULL)) {
         return -1;
     }
 
@@ -1280,12 +1240,6 @@ bool postcopy_ram_supported_by_host(MigrationIncomingState *mis)
 {
     error_report("%s: No OS support", __func__);
     return false;
-}
-
-int postcopy_ram_incoming_init(MigrationIncomingState *mis)
-{
-    error_report("postcopy_ram_incoming_init: No OS support");
-    return -1;
 }
 
 int postcopy_ram_incoming_cleanup(MigrationIncomingState *mis)

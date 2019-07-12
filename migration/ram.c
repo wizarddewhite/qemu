@@ -3998,22 +3998,6 @@ static int ram_load_cleanup(void *opaque)
 }
 
 /**
- * ram_postcopy_incoming_init: allocate postcopy data structures
- *
- * Returns 0 for success and negative if there was one error
- *
- * @mis: current migration incoming state
- *
- * Allocate data structures etc needed by incoming migration with
- * postcopy-ram. postcopy-ram's similarly names
- * postcopy_ram_incoming_init does the work.
- */
-int ram_postcopy_incoming_init(MigrationIncomingState *mis)
-{
-    return postcopy_ram_incoming_init(mis);
-}
-
-/**
  * ram_load_postcopy: load a page in postcopy case
  *
  * Returns 0 for success or -errno in case of error
