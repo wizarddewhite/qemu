@@ -1803,6 +1803,7 @@ static void *postcopy_ram_listen_thread(void *opaque)
 {
     MigrationIncomingState *mis = migration_incoming_get_current();
     QEMUFile *f = mis->from_src_file;
+    Error *local_err = NULL;
     int load_res;
 
     migrate_set_state(&mis->state, MIGRATION_STATUS_ACTIVE,
@@ -1865,6 +1866,9 @@ static void *postcopy_ram_listen_thread(void *opaque)
      */
     migration_incoming_state_destroy();
     qemu_loadvm_state_cleanup();
+    if (multifd_load_cleanup(&local_err) != 0) {
+        error_report_err(local_err);
+    }
 
     rcu_unregister_thread();
     mis->have_listen_thread = false;
