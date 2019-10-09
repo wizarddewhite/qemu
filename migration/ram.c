@@ -599,8 +599,6 @@ typedef struct {
 } __attribute__((packed)) MultiFDInit_t;
 
 typedef struct {
-    uint32_t magic;
-    uint32_t version;
     uint32_t flags;
     /* maximum number of allocated pages */
     uint32_t pages_alloc;
@@ -817,22 +815,6 @@ static int multifd_recv_unfill_packet(MultiFDRecvParams *p, Error **errp)
     uint32_t pages_max = MULTIFD_PACKET_SIZE / qemu_target_page_size();
     RAMBlock *block;
     int i;
-
-    packet->magic = be32_to_cpu(packet->magic);
-    if (packet->magic != MULTIFD_MAGIC) {
-        error_setg(errp, "multifd: received packet "
-                   "magic %x and expected magic %x",
-                   packet->magic, MULTIFD_MAGIC);
-        return -1;
-    }
-
-    packet->version = be32_to_cpu(packet->version);
-    if (packet->version != MULTIFD_VERSION) {
-        error_setg(errp, "multifd: received packet "
-                   "version %d and expected version %d",
-                   packet->version, MULTIFD_VERSION);
-        return -1;
-    }
 
     p->flags = be32_to_cpu(packet->flags);
 
@@ -1240,8 +1222,6 @@ int multifd_save_setup(void)
         p->packet_len = sizeof(MultiFDPacket_t)
                       + sizeof(ram_addr_t) * page_count;
         p->packet = g_malloc0(p->packet_len);
-        p->packet->magic = cpu_to_be32(MULTIFD_MAGIC);
-        p->packet->version = cpu_to_be32(MULTIFD_VERSION);
         p->name = g_strdup_printf("multifdsend_%d", i);
         socket_send_channel_create(multifd_new_send_channel_async, p);
     }
