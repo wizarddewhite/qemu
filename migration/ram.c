@@ -767,26 +767,43 @@ static int multifd_recv_initial_packet(QIOChannel *c, Error **errp)
     return msg.id;
 }
 
+static void multifd_pages_clear(MultiFDPages_t *pages);
 static MultiFDPages_t *multifd_pages_init(size_t size)
 {
     MultiFDPages_t *pages = g_new0(MultiFDPages_t, 1);
+
+    if (!pages) {
+        return NULL;
+    }
 
     pages->allocated = size;
     pages->iov = g_new0(struct iovec, size);
     pages->offset = g_new0(ram_addr_t, size);
 
+    if (!pages->iov | !pages->offset) {
+        goto error;
+    }
+
     return pages;
+
+error:
+    multifd_pages_clear(pages);
+    return NULL;
 }
 
 static void multifd_pages_clear(MultiFDPages_t *pages)
 {
+    if (!pages)
+        return;
     pages->used = 0;
     pages->allocated = 0;
     pages->packet_num = 0;
     pages->block = NULL;
-    g_free(pages->iov);
+    if (pages->iov)
+        g_free(pages->iov);
     pages->iov = NULL;
-    g_free(pages->offset);
+    if (pages->offset)
+        g_free(pages->offset);
     pages->offset = NULL;
     g_free(pages);
 }
