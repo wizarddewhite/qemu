@@ -1034,7 +1034,8 @@ void multifd_save_cleanup(void)
 {
     int i;
 
-    if (!migrate_use_multifd()) {
+    /* If multifd_send_state is NULL, it means setup failed. */
+    if (!migrate_use_multifd() || !multifd_send_state) {
         return;
     }
     multifd_send_terminate_threads(NULL);
@@ -1234,19 +1235,32 @@ static void multifd_new_send_channel_async(QIOTask *task, gpointer opaque)
     }
 }
 
+/*
+ * Return 0, means everything setup properly.
+ * Otherwise cleanup everything and free multifd_send_state.
+ */
 int multifd_save_setup(void)
 {
     int thread_count;
     uint32_t page_count = MULTIFD_PACKET_SIZE / qemu_target_page_size();
-    uint8_t i;
+    int i;
 
     if (!migrate_use_multifd()) {
         return 0;
     }
+
     thread_count = migrate_multifd_channels();
     multifd_send_state = g_malloc0(sizeof(*multifd_send_state));
+    if (!multifd_send_state) {
+        return -1;
+    }
+
     multifd_send_state->params = g_new0(MultiFDSendParams, thread_count);
     multifd_send_state->pages = multifd_pages_init(page_count);
+    if (!multifd_send_state->params || !multifd_send_state->pages) {
+        goto send_state_error;
+    }
+
     qemu_sem_init(&multifd_send_state->channels_ready, 0);
 
     for (i = 0; i < thread_count; i++) {
@@ -1262,9 +1276,46 @@ int multifd_save_setup(void)
                       + sizeof(ram_addr_t) * page_count;
         p->packet = g_malloc0(p->packet_len);
         p->name = g_strdup_printf("multifdsend_%d", i);
+
+        /* Something went wrong. */
+        if (!p->pages || !p->packet || !p->name) {
+            goto send_threads_error;
+        }
+    }
+
+    /* Well prepared, start channels. */
+    for (i = 0; i < thread_count; i++) {
+        MultiFDSendParams *p = &multifd_send_state->params[i];
+
         socket_send_channel_create(multifd_new_send_channel_async, p);
     }
     return 0;
+
+send_threads_error:
+    for (; i >= 0; i--) {
+        MultiFDSendParams *p = &multifd_send_state->params[i];
+
+        qemu_mutex_destroy(&p->mutex);
+        qemu_sem_destroy(&p->sem);
+        qemu_sem_destroy(&p->sem_sync);
+        if (p->name) {
+            g_free(p->name);
+        }
+        multifd_pages_clear(p->pages);
+        if (p->packet) {
+            g_free(p->packet);
+        }
+    }
+
+    qemu_sem_destroy(&multifd_send_state->channels_ready);
+send_state_error:
+    multifd_pages_clear(multifd_send_state->pages);
+    if (multifd_send_state->params) {
+        g_free(multifd_send_state->params);
+    }
+    g_free(multifd_send_state);
+    multifd_send_state = NULL;
+    return -1;
 }
 
 struct {
