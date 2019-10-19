@@ -1363,7 +1363,8 @@ int multifd_load_cleanup(Error **errp)
     int i;
     int ret = 0;
 
-    if (!migrate_use_multifd()) {
+    /* If multifd_recv_state is NULL, it means setup failed. */
+    if (!migrate_use_multifd() || !multifd_recv_state) {
         return 0;
     }
     multifd_recv_terminate_threads(NULL);
@@ -1499,14 +1500,21 @@ int multifd_load_setup(void)
 {
     int thread_count;
     uint32_t page_count = MULTIFD_PACKET_SIZE / qemu_target_page_size();
-    uint8_t i;
+    int i;
 
     if (!migrate_use_multifd()) {
         return 0;
     }
     thread_count = migrate_multifd_channels();
     multifd_recv_state = g_malloc0(sizeof(*multifd_recv_state));
+    if (!multifd_recv_state)
+        return -1;
+
     multifd_recv_state->params = g_new0(MultiFDRecvParams, thread_count);
+    if (!multifd_recv_state->params) {
+        goto recv_state_error;
+    }
+
     atomic_set(&multifd_recv_state->count, 0);
     qemu_sem_init(&multifd_recv_state->sem_sync, 0);
 
@@ -1522,8 +1530,37 @@ int multifd_load_setup(void)
                       + sizeof(ram_addr_t) * page_count;
         p->packet = g_malloc0(p->packet_len);
         p->name = g_strdup_printf("multifdrecv_%d", i);
+
+        /* Something went wrong. */
+        if (!p->pages || !p->packet || !p->name) {
+            goto recv_threads_error;
+        }
+
     }
     return 0;
+
+recv_threads_error:
+    for (; i >= 0; i--) {
+        MultiFDRecvParams *p = &multifd_recv_state->params[i];
+
+        qemu_mutex_destroy(&p->mutex);
+        qemu_sem_destroy(&p->sem_sync);
+        if (p->name) {
+            g_free(p->name);
+        }
+        multifd_pages_clear(p->pages);
+        if (p->packet) {
+            g_free(p->packet);
+        }
+    }
+
+recv_state_error:
+    if (multifd_recv_state->params) {
+        g_free(multifd_recv_state->params);
+    }
+    g_free(multifd_recv_state);
+    multifd_recv_state = NULL;
+    return -1;
 }
 
 bool multifd_recv_all_channels_created(void)
