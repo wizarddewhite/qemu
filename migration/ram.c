@@ -1168,8 +1168,8 @@ static void *multifd_send_thread(void *opaque)
             qemu_mutex_unlock(&p->mutex);
             break;
         } else {
-            qemu_mutex_unlock(&p->mutex);
-            /* sometimes there are spurious wakeups */
+            /* no other case should trigger me */
+            g_assert_not_reached();
         }
     }
 
