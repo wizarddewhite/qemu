@@ -789,15 +789,16 @@ static void multifd_pages_clear(MultiFDPages_t *pages)
     g_free(pages);
 }
 
-static void multifd_send_fill_packet(MultiFDSendParams *p)
+static void multifd_send_fill_packet(MultiFDSendParams *p, uint32_t used)
 {
     MultiFDPacket_t *packet = p->packet;
+    uint32_t next_packet_size = used * qemu_target_page_size();
     int i;
 
     packet->flags = cpu_to_be32(p->flags);
     packet->pages_alloc = cpu_to_be32(p->pages->allocated);
     packet->pages_used = cpu_to_be32(p->pages->used);
-    packet->next_packet_size = cpu_to_be32(p->next_packet_size);
+    packet->next_packet_size = cpu_to_be32(next_packet_size);
     packet->packet_num = cpu_to_be64(p->packet_num);
 
     if (p->pages->block) {
@@ -807,6 +808,13 @@ static void multifd_send_fill_packet(MultiFDSendParams *p)
     for (i = 0; i < p->pages->used; i++) {
         packet->offset[i] = cpu_to_be64(p->pages->offset[i]);
     }
+
+    p->next_packet_size = next_packet_size;
+    p->flags = 0;
+    p->num_packets++;
+    p->num_pages += used;
+    p->pages->used = 0;
+    p->pages->block = NULL;
 }
 
 static int multifd_recv_unfill_packet(MultiFDRecvParams *p, Error **errp)
@@ -1109,13 +1117,7 @@ static void *multifd_send_thread(void *opaque)
             uint64_t packet_num = p->packet_num;
             flags = p->flags;
 
-            p->next_packet_size = used * qemu_target_page_size();
-            multifd_send_fill_packet(p);
-            p->flags = 0;
-            p->num_packets++;
-            p->num_pages += used;
-            p->pages->used = 0;
-            p->pages->block = NULL;
+            multifd_send_fill_packet(p, used);
             qemu_mutex_unlock(&p->mutex);
 
             trace_multifd_send(p->id, packet_num, used, flags,
