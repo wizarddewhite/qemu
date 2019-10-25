@@ -646,7 +646,7 @@ typedef struct {
     /* should this thread finish */
     bool quit;
     /* thread has work to do */
-    int pending_job;
+    bool pending_job;
     /* array of pages to sent */
     MultiFDPages_t *pages;
     /* packet allocated len */
@@ -933,7 +933,7 @@ static int multifd_send_pages(RAMState *rs)
             return -1;
         }
         if (!p->pending_job) {
-            p->pending_job++;
+            p->pending_job = true;
             next_channel = (i + 1) % migrate_multifd_channels();
             break;
         }
@@ -1140,7 +1140,7 @@ static void *multifd_send_thread(void *opaque)
             }
 
             qemu_mutex_lock(&p->mutex);
-            p->pending_job--;
+            p->pending_job = false;
             qemu_mutex_unlock(&p->mutex);
 
             qemu_sem_post(&multifd_send_state->channels_ready);
@@ -1238,8 +1238,7 @@ int multifd_save_setup(void)
         qemu_mutex_init(&p->mutex);
         qemu_sem_init(&p->sem, 0);
         qemu_sem_init(&p->sem_sync, 0);
-        p->quit = p->sync = false;
-        p->pending_job = 0;
+        p->quit = p->sync = p->pending_job = false;
         p->id = i;
         p->pages = multifd_pages_init(page_count);
         p->packet_len = sizeof(MultiFDPacket_t)
