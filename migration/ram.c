@@ -641,6 +641,8 @@ typedef struct {
     QemuMutex mutex;
     /* is this channel thread running */
     bool running;
+    /* should sync this channel */
+    bool sync;
     /* should this thread finish */
     bool quit;
     /* thread has work to do */
@@ -1074,8 +1076,7 @@ static void multifd_send_sync_main(RAMState *rs)
         }
 
         p->packet_num = multifd_send_state->packet_num++;
-        p->flags |= MULTIFD_FLAG_SYNC;
-        p->pending_job++;
+        p->sync = true;
         qemu_file_update_transfer(rs->f, p->packet_len);
         ram_counters.multifd_bytes += p->packet_len;
         ram_counters.transferred += p->packet_len;
@@ -1143,10 +1144,27 @@ static void *multifd_send_thread(void *opaque)
             p->pending_job--;
             qemu_mutex_unlock(&p->mutex);
 
-            if (flags & MULTIFD_FLAG_SYNC) {
-                qemu_sem_post(&p->sem_sync);
-            }
             qemu_sem_post(&multifd_send_state->channels_ready);
+        } else if (p->sync) {
+            uint64_t packet_num = p->packet_num;
+            uint32_t flags = p->flags;
+            assert(!p->pages->used);
+
+            p->flags |= MULTIFD_FLAG_SYNC;
+            multifd_send_fill_packet(p, 0);
+            p->sync = false;
+            qemu_mutex_unlock(&p->mutex);
+
+            trace_multifd_send(p->id, packet_num, 0, flags | MULTIFD_FLAG_SYNC,
+                               p->next_packet_size);
+
+            ret = qio_channel_write_all(p->c, (void *)p->packet,
+                                        p->packet_len, &local_err);
+            if (ret != 0) {
+                break;
+            }
+
+            qemu_sem_post(&p->sem_sync);
         } else if (p->quit) {
             qemu_mutex_unlock(&p->mutex);
             break;
@@ -1221,7 +1239,7 @@ int multifd_save_setup(void)
         qemu_mutex_init(&p->mutex);
         qemu_sem_init(&p->sem, 0);
         qemu_sem_init(&p->sem_sync, 0);
-        p->quit = false;
+        p->quit = p->sync = false;
         p->pending_job = 0;
         p->id = i;
         p->pages = multifd_pages_init(page_count);
