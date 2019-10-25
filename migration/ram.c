@@ -1132,12 +1132,11 @@ static void *multifd_send_thread(void *opaque)
                 break;
             }
 
-            if (used) {
-                ret = qio_channel_writev_all(p->c, p->pages->iov,
-                                             used, &local_err);
-                if (ret != 0) {
-                    break;
-                }
+            assert(used);
+            ret = qio_channel_writev_all(p->c, p->pages->iov,
+                                         used, &local_err);
+            if (ret != 0) {
+                break;
             }
 
             qemu_mutex_lock(&p->mutex);
