@@ -1107,6 +1107,8 @@ static void *multifd_send_thread(void *opaque)
     }
     /* initial packet */
     p->num_packets = 1;
+    /* let main thread know we are ready */
+    qemu_sem_post(&multifd_send_state->channels_ready);
 
     while (true) {
         qemu_sem_wait(&p->sem);
